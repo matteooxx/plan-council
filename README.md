@@ -355,10 +355,27 @@ save on assignment. `max` is for when correctness matters more than cost, and
 is rarely the right default for all four phases at once.
 
 `COUNCIL_BUDGET_USD` caps **each child run** through the CLI's own
-`--max-budget-usd`. Empty means no cap. With N planners a council is 2N + 1
+`--max-budget-usd`. Empty means no cap, and empty is the shipped default:
+nothing is capped unless you ask for it. With N planners a council is 2N + 1
 long runs plus one for the assignment, so a cap of 2 holds the Claude side of
 a two-planner council near 8. The cap's price: a run that reaches it stops
 instead of finishing.
+
+**A cap is not a one-way door.** Lift it permanently by editing the line, or
+for a single run by exporting an empty value:
+
+```sh
+COUNCIL_BUDGET_USD= council-plan.sh brief.md --root .
+```
+
+That works because three settings are written `"${VAR-default}"`, without the
+colon: `COUNCIL_BUDGET_USD`, `COUNCIL_MODEL_CODEX` and `COUNCIL_AGENT_DIRS`
+are the ones whose **empty value means something** — no cap, Codex's own
+default model, no extra agent directories. With `"${VAR:-default}"` an
+exported empty value counts as unset and the default returns, so "no cap for
+this run" could not be expressed at all: measured 2026-11-14, the run refused
+to start and reported that the config had overridden the environment. Every
+other setting keeps the colon.
 
 Codex takes neither flag. Its depth comes from its own model and config, so
 pin `COUNCIL_MODEL_CODEX` if you want it fixed.
