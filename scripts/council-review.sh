@@ -61,12 +61,25 @@ plans_block() {
   done
 }
 
+# The run directory holds council.txt, which maps each letter to its planner,
+# and with the config that is one read away from the model. Every child agent
+# here is handed what it needs in its own prompt, so the directory is denied
+# outright. Measured 2026-11-14: without this an agent with the arbiter's own
+# flags found and read council.txt unaided.
+COUNCIL_DENY=$(council_deny_rule "$RUN")
+# And every earlier run too: an arbiter refused this run's directory then read
+# an earlier run's council.txt and reported its mapping, which in a project
+# that always runs the same planners in the same order is this run's mapping.
+COUNCIL_DENY2=$(council_deny_all_runs "$ROOT")
+export COUNCIL_DENY COUNCIL_DENY2
+
 # --- Cross-attack -------------------------------------------------------------
 if [ "$ARBITRATE_ONLY" -eq 0 ]; then
   for L in $LETTERS; do
     [ ! -e "$RUN/attack-$L.md" ] || council_die "attack-$L.md already exists; use --arbitrate-only or a fresh run"
   done
   JOBS=""
+  FNS=""
   for L in $LETTERS; do
     name=$(council_manifest_get "$MANIFEST" "planner\\.$L")
     {
@@ -77,8 +90,12 @@ if [ "$ARBITRATE_ONLY" -eq 0 ]; then
       printf '\n'
     } > "$STAGE/prompt-$L.md"
     JOBS="$JOBS $L:planner_$name"
+    FNS="$FNS planner_$name"
   done
-  council_say "cross-attack: $COUNT attacks in parallel, from $ROOT"
+  COUNCIL_PHASE=attack
+  export COUNCIL_PHASE
+  council_check_deny_used "$FNS" || true
+  council_say "cross-attack: $COUNT attacks in parallel, from $ROOT (effort $COUNCIL_ATTACK_EFFORT)"
   # shellcheck disable=SC2086
   council_run_parallel "$ROOT" "$STAGE" $JOBS
   STATUS=$?
@@ -115,7 +132,10 @@ done
   printf '\n'
 } > "$STAGE/prompt-arbiter.md"
 
-council_say "arbitration: running from $ROOT"
+COUNCIL_PHASE=arbitrate
+export COUNCIL_PHASE
+council_check_deny_used arbiter || true
+council_say "arbitration: running from $ROOT (effort $COUNCIL_ARBITER_EFFORT)"
 council_run_parallel "$ROOT" "$STAGE" "arbiter:arbiter"
 STATUS=$?
 council_keep_logs "$STAGE" "$RUN" "arbiter-"

@@ -91,7 +91,16 @@ esac
   printf '\n'
 } > "$STAGE/prompt-assign.md"
 
-council_say "assigning tasks (assigner: the configured arbiter, from $ROOT)"
+# No attribution is at stake here: the assigner is handed the plan and the
+# roster in its own prompt. The rule is still set, and always to something
+# real, because the configured functions pass "$COUNCIL_DENY" to their CLI and
+# an empty value would make every run complain.
+COUNCIL_DENY=$(council_deny_rule "$OUTDIR")
+COUNCIL_DENY2=$(council_deny_all_runs "$ROOT")
+COUNCIL_PHASE=assign
+export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
+council_check_deny_used arbiter || true
+council_say "assigning tasks (assigner: the configured arbiter, from $ROOT, effort $COUNCIL_ASSIGN_EFFORT)"
 council_run_parallel "$ROOT" "$STAGE" "assign:arbiter"
 STATUS=$?
 council_keep_logs "$STAGE" "$OUTDIR" "assign-"

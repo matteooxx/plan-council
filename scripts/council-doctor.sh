@@ -47,9 +47,49 @@ done
 echo "Config"
 council_load_config "$ROOT" "$PLUGIN_ROOT"
 ok "loaded $COUNCIL_CONFIG_USED"
+if [ -f "$ROOT/.claude/plan-council.conf" ] || [ -n "${COUNCIL_CONFIG:-}" ]; then
+  ok "the config is one you chose"
+else
+  note "this is the shipped DEFAULT, not a choice you made: it names Opus because"
+  note "that is the broadest entitlement, not because it is your best model."
+  note "Run /council-setup once, or council-detect.sh to see what this machine has."
+fi
 ( council_check_planners ) 2>/dev/null && ok "planners: $COUNCIL_PLANNERS" || bad "planners: run council-plan.sh to see why ($COUNCIL_PLANNERS)"
 type arbiter >/dev/null 2>&1 && ok "arbiter function defined" || bad "no arbiter function"
 [ -n "$COUNCIL_RISK_FLOOR" ] && ok "risk floor: $COUNCIL_RISK_FLOOR" || bad "COUNCIL_RISK_FLOOR is empty"
+ok "effort: plan $COUNCIL_PLANNER_EFFORT, attack $COUNCIL_ATTACK_EFFORT, arbitrate $COUNCIL_ARBITER_EFFORT, assign $COUNCIL_ASSIGN_EFFORT"
+if [ -n "$COUNCIL_BUDGET_USD" ]; then
+  ok "budget cap: \$$COUNCIL_BUDGET_USD per child run"
+else
+  note "no budget cap set (COUNCIL_BUDGET_USD empty); a run spends what the models spend"
+fi
+
+echo "Blindness rule"
+FNS="arbiter"
+for p in $COUNCIL_PLANNERS; do FNS="$FNS planner_$p"; done
+if council_check_deny_used "$FNS" 2>/dev/null; then
+  ok "every claude planner and the arbiter pass \$COUNCIL_DENY to their CLI"
+else
+  bad "a claude function drops \$COUNCIL_DENY: it can read the run directory, and"
+  bad "with it which planner wrote which plan. Add \"\$COUNCIL_DENY\" to its"
+  bad "--disallowedTools, as config/council.conf does."
+fi
+if [ -n "${COUNCIL_DENY_UNCOVERED:-}" ]; then
+  note "the deny rule is a Claude Code permission rule and cannot reach:$COUNCIL_DENY_UNCOVERED"
+  note "with one of those as a planner, the attack phase's blindness rests on the"
+  note "prompt rather than on the code. Run council-detect.sh to prove the rule works"
+  note "where it does apply."
+fi
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    command -v cygpath >/dev/null 2>&1 \
+      && ok "cygpath present: deny rules can be written in the form the CLI honours" \
+      || bad "cygpath missing: a deny rule may be written as an MSYS path, which the CLI ignores silently"
+    note "PowerShell has no 'sh' on PATH. From there, run these scripts as:"
+    note "  & \"C:\\Program Files\\Git\\bin\\sh.exe\" \"scripts/council-plan.sh\" <brief> --root <dir>"
+    note "'bash' on Windows is usually WSL, which mangles Windows paths silently."
+    ;;
+esac
 
 echo "Tools"
 for tool in claude codex; do
@@ -81,12 +121,16 @@ done
 
 if [ "$PROBE" -eq 1 ] && command -v claude >/dev/null 2>&1; then
   echo "Model probe (asked for -> reported in usage)"
+  # The configured models come from the resolved settings, not from grepping
+  # the file: the functions now name a variable, so the ID is only known after
+  # the config has been loaded.
   MODELS=$( {
+    printf '%s\n' "$COUNCIL_MODEL_CLAUDE" "$COUNCIL_MODEL_CLAUDE_ALT" "$COUNCIL_MODEL_ARBITER"
     grep -v '^[[:space:]]*#' "$COUNCIL_CONFIG_USED" | sed -n 's/.*--model[[:space:]]\{1,\}\([A-Za-z0-9._-]*\).*/\1/p'
     for f in "$PLUGIN_ROOT"/agents/*.md; do
       tr -d '\r' < "$f" | sed -n 's/^model:[[:space:]]*//p' | head -n 1
     done
-  } | sort -u )
+  } | grep -v '^$' | grep -v '^\$' | sort -u )
   for m in $MODELS; do
     json=$(printf 'Reply with the single word ok.' | claude -p --model "$m" --output-format json 2>&1)
     reported=$(printf '%s' "$json" | grep -o '"claude-[A-Za-z0-9._-]*"' | tr -d '"' | sort -u | tr '\n' ' ')
