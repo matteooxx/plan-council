@@ -124,6 +124,13 @@ Three Windows traps, each measured rather than assumed:
 
 `council-detect.sh` prints the right line for your machine.
 
+**Do not let anything rewrite the line endings.** `.gitattributes` pins `*.sh`
+and `*.conf` to LF because CRLF kills them — unevenly, which is worse than
+plainly: a CRLF copy still runs under Git Bash's `sh` but dies under `dash` on
+the second line with `set: Illegal option -`, naming neither the file nor the
+cause. A clone made on Windows with `core.autocrlf=true` and then used on
+Linux, in WSL or in a container is exactly that case.
+
 ## What is in the box
 
 ```
