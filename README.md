@@ -61,23 +61,68 @@ To try it from a local checkout without installing:
 claude --plugin-dir ./plan-council
 ```
 
-Then run the self-check once:
+Then set it up, once:
+
+```
+/council-setup
+```
+
+**This matters more than it sounds.** A fresh install cannot know which Claude
+models your account has, whether Codex is connected, what shell you type into,
+or how deep you want each phase to think — and the shipped config names Opus
+because that is the broadest entitlement, not because it is the best model
+available to you. `/council-setup` asks, checks whatever you do not know, and
+writes your answers to `<your-project>/.claude/plan-council.conf`. It asks what
+you want to plan **last**.
+
+If you would rather just see what this machine has:
+
+```
+sh scripts/council-detect.sh
+```
+
+It reports your OS and the invocation for each shell on it, the required tools,
+both planner CLIs and Codex's login state, which models actually answer, the
+agent roster, and whether the rule that keeps the arbiter blind is honoured
+here — each by running something, not by assuming. Afterwards, or after any
+upgrade:
 
 ```
 /council-doctor
 ```
 
-It checks that the scripts parse, the config loads, the planners' CLIs are
-installed, and, with one tiny request per model, that **each pinned model is
-the model that actually answers**.
-
 ### Requirements
 
-- Claude Code (written against 2.1.x).
-- A POSIX shell with `awk`, `sed`, `cmp`, `mktemp` and `git` (on Windows, Git
-  Bash provides all of them). No Python, Node or `jq` is needed.
+- Claude Code (verified against 2.1.325).
+- A POSIX shell with `awk`, `sed`, `cmp`, `mktemp`, `cut`, `tr` and `git`. No
+  Python, Node or `jq` is needed.
 - Optional: the [Codex CLI](https://github.com/openai/codex), logged in. Without it, see
   [Two Claude models instead of Codex](#two-claude-models-instead-of-codex).
+
+**Any OS, but not any shell.** The scripts are POSIX `sh` and run on Linux,
+macOS and Windows. What differs is how you invoke them, so nothing here
+assumes your platform:
+
+| You type into | Command |
+|---|---|
+| Linux / macOS (`sh`, `bash`, `zsh`) | `sh scripts/council-plan.sh <brief> --root <dir>` |
+| Git Bash / MSYS on Windows | `sh scripts/council-plan.sh <brief> --root <dir>` |
+| PowerShell | `& "C:\Program Files\Git\bin\sh.exe" "scripts/council-plan.sh" <brief> --root <dir>` |
+| cmd.exe | `"C:\Program Files\Git\bin\sh.exe" "scripts/council-plan.sh" <brief> --root <dir>` |
+
+Three Windows traps, each measured rather than assumed:
+
+- PowerShell and cmd have **no `sh` on `PATH`**, so the bare command fails
+  there with "not recognized".
+- Use `<git-root>\bin\sh.exe`, **not** `<git-root>\usr\bin\sh.exe`. The second
+  inherits the caller's `PATH` and, started from PowerShell, cannot find
+  `dirname`: the script dies on its second line.
+- Plain `bash` on Windows is usually `C:\Windows\system32\bash.exe`, which is
+  **WSL** — a different machine. Its path translation turns a Windows working
+  directory into a string with the separators eaten, silently. In WSL, install
+  and log in to the planner CLIs *inside* WSL.
+
+`council-detect.sh` prints the right line for your machine.
 
 ## What is in the box
 
@@ -91,13 +136,15 @@ plan-council/
   agents/worker.md                 mechanical edits, mid model
   agents/implementer.md            the risk floor, strongest model
   agents/reviewer.md               no editor; reviews, never writes
+  commands/council-setup.md        /council-setup   (the first-run interview)
   commands/council-plan.md         /council-plan
   commands/council-review.md       /council-review
   commands/council-assign.md       /council-assign
   commands/council-doctor.md       /council-doctor
+  scripts/council-detect.sh        what this machine has, by running things
   scripts/*.sh                     what the commands run
   prompts/*.md                     the planner, attacker, arbiter and assigner prompts
-  config/council.conf              planners, arbiter, risk floor
+  config/council.conf              models, effort per phase, budget, planners, risk floor
   hooks/register.ts                the safety hook
   hooks/register.test.ts           its tests: claude plugin test ./plan-council
 ```
@@ -220,10 +267,23 @@ once, and you, not an agent, run the deploy.
 
 ## Configuration
 
-The defaults live in `config/council.conf`. To change them for one project,
-copy it to `<your-project>/.claude/plan-council.conf`. To use one copy
-everywhere, point `COUNCIL_CONFIG` at it. The file is POSIX shell, and each
-planner is one function:
+The defaults live in `config/council.conf`. For one project, write
+`<your-project>/.claude/plan-council.conf` — `/council-setup` writes it for
+you. To use one file everywhere, point `COUNCIL_CONFIG` at it. The file is
+POSIX shell, and each planner is one function:
+
+**Write a project config as a delta, not a copy.** Set the few values you care
+about and then source the plugin's, inheriting every planner function:
+
+```sh
+COUNCIL_MODEL_CLAUDE="${COUNCIL_MODEL_CLAUDE:-claude-fable-5-2}"
+COUNCIL_ARBITER_EFFORT="${COUNCIL_ARBITER_EFFORT:-xhigh}"
+. "$COUNCIL_PLUGIN_ROOT/config/council.conf"
+```
+
+Copying the whole file is how a plain assignment spreads, and a plain
+assignment is what silently overrode an exported value for as long as that bug
+lived.
 
 Every setting also **defers to the environment**, so a single run can be changed
 without editing a file:
@@ -232,12 +292,47 @@ without editing a file:
 COUNCIL_PLANNERS="claude claude_alt" council-plan.sh brief.md
 ```
 
-Whatever arrived that way is printed before the run starts
-(`from the environment, not the config: COUNCIL_PLANNERS`). It is announced in
-both directions on purpose: a value dropped in silence and a stray export in a
-shell profile steering a run are the same failure wearing different clothes. If
-you add a setting, keep the `VAR="${VAR:-default}"` form — a plain assignment
-would override the environment without saying so.
+What survived that way is printed before the run starts
+(`from the environment, and still in effect after the config: COUNCIL_PLANNERS`).
+It is announced in both directions on purpose: a value dropped in silence and a
+stray export in a shell profile steering a run are the same failure wearing
+different clothes.
+
+The announcement reports the **outcome**, not the intention, and that
+distinction was a bug. An earlier version noted which names arrived from the
+environment and never looked again, so a config using a plain assignment made
+the run say the environment had won while the config had overridden it — the
+silently ignored setting, wearing a line that denied it. A run now **refuses to
+start** when a config overrides an exported value, and names both values and
+the line to write. So if you add a setting, keep the `VAR="${VAR:-default}"`
+form.
+
+### Effort per phase, and a spending cap
+
+How deep each model reasons is set per phase, because one planner function
+serves both planning and attacking:
+
+| Setting | Default | What it governs |
+|---|---|---|
+| `COUNCIL_PLANNER_EFFORT` | `high` | writing the plan |
+| `COUNCIL_ATTACK_EFFORT` | `high` | attacking the other plans |
+| `COUNCIL_ARBITER_EFFORT` | `high` | deciding, and verifying in the code |
+| `COUNCIL_ASSIGN_EFFORT` | `medium` | filling the assignment table |
+
+Levels are `low`, `medium`, `high`, `xhigh`, `max`. Each level up means more
+reasoning tokens, and reasoning bills as output, which is five times the input
+rate — so this is the main cost lever inside one model. Pay for arbitration;
+save on assignment. `max` is for when correctness matters more than cost, and
+is rarely the right default for all four phases at once.
+
+`COUNCIL_BUDGET_USD` caps **each child run** through the CLI's own
+`--max-budget-usd`. Empty means no cap. With N planners a council is 2N + 1
+long runs plus one for the assignment, so a cap of 2 holds the Claude side of
+a two-planner council near 8. The cap's price: a run that reaches it stops
+instead of finishing.
+
+Codex takes neither flag. Its depth comes from its own model and config, so
+pin `COUNCIL_MODEL_CODEX` if you want it fixed.
 
 
 ```sh
@@ -299,7 +394,22 @@ read-only flags.
 
 ### Models
 
-Executor models are pinned in each agent's frontmatter (`model:`), using
+**Planner and arbiter models** are settings, so the setup interview can write
+them without touching a function: `COUNCIL_MODEL_CLAUDE`,
+`COUNCIL_MODEL_CLAUDE_ALT`, `COUNCIL_MODEL_ARBITER` and
+`COUNCIL_MODEL_CODEX`. They hold exact IDs rather than aliases, because an
+alias moves under you and knowing which model answered is the point of the
+method. `--model` does accept `fable`, `opus` and `sonnet` if you prefer the
+latest of a line.
+
+The shipped defaults are Opus 5.5 for a planner and the arbiter and Sonnet 5.5
+for the second Claude planner. **That is an entitlement guess, not a
+recommendation.** If your account has Claude Fable 5.2 it is the most capable
+model available and roughly twice the price of Opus 5.5; `planner_fable` ships
+ready to use. `council-detect.sh` probes each candidate and reports which ones
+actually answer, so you need not guess at all.
+
+**Executor models** are pinned in each agent's frontmatter (`model:`), using
 exact model IDs. To change them, edit your copy of the plugin, or copy an
 agent into `~/.claude/agents/` under a new name and add that directory to
 `COUNCIL_AGENT_DIRS` so `/council-assign` sees it. The risk floor is
@@ -356,10 +466,23 @@ Two traps cannot be designed out by a plugin, so here they are, stated plainly:
 
 ## Version-sensitive flags
 
-The planner and arbiter functions use `claude -p`, `--model`,
-`--permission-mode default`, `--allowedTools`, `--disallowedTools`,
-`--output-format json`, and `codex exec --sandbox read-only
---skip-git-repo-check --output-last-message`. Permission modes in particular
+The planner and arbiter functions use `claude -p`, `--model`, `--effort`,
+`--max-budget-usd`, `--permission-mode default`, `--allowedTools`,
+`--disallowedTools`, `--output-format json`, and `codex exec --sandbox
+read-only --skip-git-repo-check --output-last-message -`. Every one of those
+was confirmed present in Claude Code 2.1.325 and codex-cli 0.162.1 on
+2026-11-14; `--effort` takes `low`, `medium`, `high`, `xhigh` or `max`, and
+`--max-budget-usd` works only together with `--print`, which every function
+here uses.
+
+Two shapes matter beyond the names. `--allowedTools` and `--disallowedTools`
+are **variadic**, so a prompt written after one of them is swallowed as more
+tool names — which is one reason every prompt arrives on stdin. And a deny
+rule takes a path: `Read(<dir>/**)` blocks `Grep` as well as `Read`, but only
+when the path is written in the form the CLI accepts, which on Windows is the
+`cygpath -m` form and not the MSYS one.
+
+Permission modes in particular
 **are not what their names suggest**, and their meanings have changed
 between versions. A mode that sounds permissive can deny everything in a
 non-interactive session, and an edit-accepting mode alone leaves every shell
@@ -373,70 +496,119 @@ the installed versions, and run `/council-doctor` after every upgrade.
 
 ## Limitations
 
-- **Run end to end with stand-in planners, never with real models.** What was
-  actually exercised, with shell-function planners that need no model:
-  `council-plan.sh` publishes `plan-A.md` and `plan-B.md`; `council-review.sh`
-  runs both attacks in parallel, extracts each one's closing preference, and
-  reaches a verdict from the arbiter. Three invariants were checked rather than
-  assumed: both planners receive a **byte-identical prompt** (same `cksum`
-  recorded from inside each planner); the arbiter sees only *Plan A* and *Plan B*,
-  with authorship kept out of the plan files and recorded in `council.txt`; and a
-  planner that **exits 0 having written nothing** is caught, the run fails with
-  status 1, and nothing is published. The JSON files parse, the scripts pass
-  `bash -n`, `claude plugin validate` passes, and the hook passes 7 of 7 tests
-  under `claude plugin test` (`hooks/register.test.ts`, each guard proven by a
-  mutation that turned it red).
-  **Not** exercised: a council with real models, and the hook inside a live
-  session. Run `/council-doctor`, then a council on a small throwaway brief,
-  before relying on it.
-- **`claude plugin validate` advises adding an install line that is already
-  there.** `README.md` carries the exact `/plugin install ... --marketplace`
-  line it asks for. The advice does not change the verdict, and validation
-  passes.
-- **Agents, commands and skills are discovered by convention.**
-  `claude plugin validate` reports the manifest and the hooks module; it does
-  not list `agents/`, `commands/` or `skills/`, so their discovery was not
-  confirmed by a tool.
-- **CLI flags are unverified against your installed versions.** The Claude
-  Code and Codex flags above come from their documented interfaces at the
-  time of writing and were not executed. In particular: that
-  `claude -p --permission-mode default` denies (rather than waits on)
-  anything outside `--allowedTools`; that `--disallowedTools` removes
-  Edit/Write from the arbiter entirely; and that `codex exec -` reads the
-  prompt from stdin.
-- **The model probe parses JSON with grep.** It lists every `claude-*` ID in
-  the CLI's JSON output. If a future version reports models differently,
-  the probe will say it found none; it will not report a false pass.
-- **Model IDs go stale.** The agents pin exact IDs (`claude-opus-5-5`,
-  `claude-sonnet-5-5`, `claude-haiku-5-5`). When those models are retired,
-  update the frontmatter and the config; `/council-doctor` will show the
-  failure. Whether an unknown ID in frontmatter fails loudly or falls back
-  silently was not verified, which is why the probe exists.
-- **Codex runs on its own configured default model** unless you add
-  `-m <model>` to `planner_codex`. No Codex model ID is pinned, because I
-  could not verify one.
+Everything below was measured on 2026-11-14 against Claude Code 2.1.325 and
+codex-cli 0.162.1, on Windows with Git Bash, unless it says otherwise. A
+limitation that is wrong by understatement is still wrong, so what has since
+been proved is stated as proved, and what broke is stated as broken.
+
+**Run end to end with real models, once.** A full chain — two blind plans, two
+parallel attacks, arbitration — ran on this repository with Claude Opus 5.5 and
+Codex as planners: 3m35s for the planning phase, about 8 minutes in all, a
+`PASS` verdict whose report carried all five required sections, zero
+percentages, and 12 `path:line` citations. The attacks disagreed (one closed
+`THIRD`, the other `A`), which is the method working rather than two plans
+agreeing. One run is not a track record.
+
+**Proved by measurement, not assumed:**
+
+- **Marketplace install.** `claude plugin marketplace add matteooxx/plan-council`
+  then `claude plugin install plan-council@plan-council` installs and enables
+  it at user scope. The component inventory then lists 6 skills (the two skills
+  plus the four commands) and 4 agents, so discovery by convention works.
+- **Both hooks fire in a live session.** An `Agent` dispatch with no model was
+  denied with this plugin's own message, which listed the pinned agents it
+  found — the plugin's four, prefixed, plus the user's own from
+  `~/.claude/agents`. A subagent's `ssh -V` was denied with the remote-connection
+  message, and the subagent deferred to the orchestrator as the text tells it to.
+- **The three invariants hold with three planners, not just two.** One prompt
+  checksum across all three plans; each planner saw zero rival plans while
+  writing; each attacker saw all three plans and zero rival attacks; the
+  arbiter saw three plans and three attacks.
+- **`/council-assign` runs**, builds the roster from the agents' frontmatter,
+  validates the risk floor, and warns when a percentage appears in the table
+  (proved with an assigner that emitted one).
+- **A run leaves no trace in version control.** With the run directory inside
+  the repository, `git status` stayed clean and `git check-ignore -v` named
+  `.council/.gitignore:1:*` as the rule covering both the ignore file and the
+  run's own files.
+- **Portability beyond one shell.** The whole chain runs under `dash` as well
+  as Git Bash's `sh`. See the table in [Requirements](#requirements) for the
+  per-shell invocation; the Windows traps there were each produced on purpose.
+
+**Known false reports from the tooling, neither of which is a defect here:**
+
+- `claude plugin validate` advises adding an install line that is already in
+  this README, word for word. Validation passes regardless.
+- `claude plugin details plan-council` reports **`Hooks (0)`** even though both
+  hooks demonstrably deny a live dispatch. A `modules`-based hook is not
+  counted there; the file has the same shape as a working plugin's. Do not
+  conclude from that line that the hook is missing.
+
+**Still not proved:**
+
+- **WSL and native Linux or macOS.** `dash` on Windows is not the same thing.
+  In WSL the planner CLIs resolve to the Windows binaries through `/mnt/c`
+  unless installed inside WSL, and a working directory crosses that boundary
+  with its separators eaten.
+- **Adapters for a third provider** (Gemini CLI, Cursor, Aider). The shape is
+  documented; none has been invoked.
+- **The model probe's parsing** still lists every `claude-*` ID in the CLI's
+  JSON output with `grep`. If a future version reports models differently the
+  probe will say it found none; it will not report a false pass.
+- **Codex's model is not pinned** unless you set `COUNCIL_MODEL_CODEX`, and
+  Codex takes neither `--effort` nor `--max-budget-usd`, so those settings do
+  not reach it.
+
+**Real gaps that remain, now stated plainly:**
+
+- **The context root is not a boundary.** A read-only child agent read an
+  absolute path *outside* the root with no refusal at all. Earlier versions of
+  this README and of `skills/council/SKILL.md` said such a read was silently
+  refused. That was wrong. The root decides where an agent starts and what its
+  relative paths mean, nothing more.
+- **The arbiter's blindness is enforced for Claude children only.** The run
+  directory holds `council.txt`, which maps each letter to its planner, and the
+  config turns a planner name into an exact model in one more read. Each child
+  is now given a deny rule covering that directory, and `council-detect.sh`
+  proves the rule works with a canary before you trust it. But the rule is a
+  Claude Code permission rule: **it does not reach Codex**, whose read access is
+  whatever that CLI grants. With Codex as a planner, the attack phase's
+  blindness rests on the prompt. `/council-doctor` names every function the rule
+  cannot cover.
+  A deny rule written with an MSYS path (`/c/...`) matches nothing and blocks
+  nothing, in silence — `cygpath -m` produces the form that is honoured, which
+  is why `cygpath` is checked for on Windows.
+- **The arbiter still defaults to the same model as a planner.** It is never
+  told which plan is whose, and it can no longer look the mapping up, but a
+  model that may be judging its own work is a weaker check than one that
+  cannot be. `/council-setup` offers a third model for the job.
+- **`${CLAUDE_PLUGIN_ROOT}` does not resolve.** It is absent from a session's
+  environment; in a POSIX shell on Windows the unresolved reference becomes a
+  path inside the Git installation rather than an error, so a live
+  `/council-doctor` was handed `C:/Program Files/Git/council-doctor` and
+  completed only through the documented Glob fallback. That fallback is
+  load-bearing, not a safety net, and the commands now put it first.
 - **The reviewer has a shell.** It has no Edit or Write tool, and its
-  instructions forbid writing through the shell, but `Bash` can write files.
-  It needs the shell to run tests. If you need a reviewer that cannot write
-  at all, remove `Bash` from its `tools:` and run the tests yourself.
-- **The arbiter defaults to the same model as the Claude planner.** It never
-  learns which planner wrote which plan, which reduces but does not remove
-  self-preference. Use a third model if you have one.
-- **The subagent command guard is best effort.** It matches common
-  spellings in command position. An agent determined to run `git push` via a
-  script file will get through. The rule in the execution-discipline skill
-  is the real control.
-- **Skill and command frontmatter.** The skills use `name` and `description`,
-  the commands `description` and `argument-hint`, and the commands refer to
-  `${CLAUDE_PLUGIN_ROOT}`, with a fallback that finds the scripts by
-  searching `~/.claude/plugins/`. These conventions were not confirmed
-  against the installed version's plugin loader.
-- **Cost is not capped.** Nothing stops a run from spending what the models
-  spend. With N planners a run is 2N + 1 long model runs, plus one for the
-  assignment.
-- **Planner names and paths.** Planner names may use only letters, digits
-  and `_`. `COUNCIL_AGENT_DIRS` is space-separated, so its paths cannot
-  contain spaces.
+  instructions forbid writing through the shell, but `Bash` can write files. It
+  needs the shell to run tests. For a reviewer that cannot write at all, remove
+  `Bash` from its `tools:` and run the tests yourself.
+- **The subagent command guard is best effort.** It matches common spellings in
+  command position. An agent determined to run `git push` from inside a script
+  file will get through. The rule in the execution-discipline skill is the real
+  control.
+- **Cost is capped only if you cap it.** `COUNCIL_BUDGET_USD` is empty by
+  default, and a council is 2N + 1 long runs plus one. Claude's side of a run
+  reports no usage anywhere the plugin can read, because each planner's answer
+  *is* its stdout, which rules out `--output-format json`; Codex, by contrast,
+  prints its token count into the kept log. So a run cannot report its own
+  Claude cost.
+- **Model IDs go stale.** The agents pin exact IDs. When those models retire,
+  update the frontmatter and the config; `/council-doctor`'s probe will show
+  the failure. Whether an unknown ID fails loudly or falls back silently was
+  not verified, which is why the probe exists.
+- **Planner names and paths.** Planner names may use only letters, digits and
+  `_`. `COUNCIL_AGENT_DIRS` is space-separated, so its paths cannot contain
+  spaces.
 
 ## License
 

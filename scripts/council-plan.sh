@@ -62,18 +62,40 @@ PROMPT="$STAGE/prompt.md"
 } > "$PROMPT"
 [ "$(council_size "$PROMPT")" -gt "$(council_size "$BRIEF_ABS")" ] || council_die "prompt assembly failed: $PROMPT"
 
+# Jobs are labelled by letter, never by planner name: the stage files and the
+# published logs then carry a letter, so no log attributes a plan to a model.
 JOBS=""
+FNS=""
+i=0
 for name in $COUNCIL_PLANNERS; do
-  cp "$PROMPT" "$STAGE/prompt-$name.md"
-  JOBS="$JOBS $name:planner_$name"
+  i=$((i + 1))
+  letter=$(council_letter "$i")
+  cp "$PROMPT" "$STAGE/prompt-$letter.md"
+  JOBS="$JOBS $letter:planner_$name"
+  FNS="$FNS planner_$name"
 done
 # Belt and braces: prove the prompts are byte-identical before spending.
+i=0
 for name in $COUNCIL_PLANNERS; do
-  cmp -s "$PROMPT" "$STAGE/prompt-$name.md" || council_die "prompt for $name differs"
+  i=$((i + 1))
+  letter=$(council_letter "$i")
+  cmp -s "$PROMPT" "$STAGE/prompt-$letter.md" || council_die "prompt for planner $letter differs"
 done
+
+# Keep every planner out of the run directory. Nothing it needs is in there,
+# and once the plans are published the attribution is.
+COUNCIL_DENY=$(council_deny_rule "$OUT")
+# Planning deliberately leaves earlier runs readable: the prompt invites a
+# planner to use prior council runs as working material, and this run's
+# directory holds nothing yet.
+COUNCIL_DENY2=$COUNCIL_DENY
+COUNCIL_PHASE=plan
+export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
+council_check_deny_used "$FNS" || true
 
 council_say "context root: $ROOT"
 council_say "config:       $COUNCIL_CONFIG_USED"
+council_say "effort:       planners $COUNCIL_PLANNER_EFFORT${COUNCIL_BUDGET_USD:+, budget cap \$$COUNCIL_BUDGET_USD per run}"
 council_say "planners:     $COUNCIL_PLANNERS (in parallel; this can take many minutes)"
 
 # shellcheck disable=SC2086
@@ -95,8 +117,8 @@ for name in $COUNCIL_PLANNERS; do
   i=$((i + 1))
   letter=$(council_letter "$i")
   printf 'planner.%s=%s\n' "$letter" "$name" >> "$OUT/council.txt"
-  if council_answer_ok "$STAGE/answer-$name.md"; then
-    cp "$STAGE/answer-$name.md" "$OUT/plan-$letter.md"
+  if council_answer_ok "$STAGE/answer-$letter.md"; then
+    cp "$STAGE/answer-$letter.md" "$OUT/plan-$letter.md"
   fi
 done
 council_keep_logs "$STAGE" "$OUT" "plan-"
