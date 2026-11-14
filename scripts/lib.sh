@@ -64,12 +64,30 @@ council_deny_rule() {
 # review and assignment phases deny the whole council tree as well. The
 # planning phase does not: reading prior runs as working material is a
 # documented feature, and the current run holds nothing yet.
+# It always names the council tree, whether or not that directory exists. An
+# earlier version fell back to denying the CONTEXT ROOT when there was no
+# .council, to keep the value non-empty -- which blinded the arbiter to the
+# whole repository. Measured 2026-11-14 on the first council run with real
+# models: Read of scripts/lib.sh, Grep on scripts/, Glob on the root and even
+# "pwd; ls" were all refused, so the arbiter could verify nothing and said so.
+# A rule naming a directory that does not exist matches nothing, which is
+# exactly what is wanted when there are no earlier runs to hide.
 council_deny_all_runs() {
-  if [ -d "$1/.council" ]; then
-    council_deny_rule "$1/.council"
-  else
-    council_deny_rule "$1"
+  council_deny_rule "$1/.council"
+}
+
+# council_assert_not_root ROOT RULE1 RULE2
+# Refuses to start when a deny rule would cover the context root itself.
+# Denying the root blinds every child to the code, and checking claims against
+# the code is the arbiter's entire job -- so getting this wrong makes a council
+# worthless while every exit code stays 0 and the report still looks like a
+# report. That happened once; it does not get to happen quietly again.
+council_assert_not_root() {
+  _rootrule=$(council_deny_rule "$1")
+  if [ "${2:-}" = "$_rootrule" ] || [ "${3:-}" = "$_rootrule" ]; then
+    council_die "a deny rule would cover the context root itself ($_rootrule). Every child would be blind to the code, and the arbiter could verify nothing. This is a bug in plan-council, not in your setup: please report it."
   fi
+  return 0
 }
 
 # council_load_config CONTEXT_ROOT PLUGIN_ROOT
@@ -140,7 +158,19 @@ council_load_config() {
     if [ "$_after" = "$_before" ]; then
       _kept="$_kept $_v"
     else
-      council_die "$_abs overrode $_v. The environment set it to '$_before'; after the config it is '$_after'. Write that line as $_v=\"\${$_v:-<default>}\" so an exported value survives, or unset $_v before this run. A setting ignored in silence is the failure this method exists to prevent."
+      # The advice has to match the case. An exported EMPTY value survives only
+      # the colon-less form, so telling someone to write "${VAR:-default}" when
+      # they exported an empty value is advice that cannot work -- and the line
+      # is usually already written that way, which is why the empty value was
+      # lost. Measured 2026-11-14 while trying to remove a budget cap.
+      if [ -z "$_before" ]; then
+        _form="\${$_v-<default>}"
+        _why=" An exported EMPTY value survives only the colon-less form: with \${$_v:-<default>} an empty value counts as unset and the default comes back."
+      else
+        _form="\${$_v:-<default>}"
+        _why=""
+      fi
+      council_die "$_abs overrode $_v. The environment set it to '$_before'; after the config it is '$_after'. Write that line as $_v=\"$_form\" so an exported value survives, or unset $_v before this run.$_why A setting ignored in silence is the failure this method exists to prevent."
     fi
   done
   [ -n "$_kept" ] && council_say "from the environment, and still in effect after the config:$_kept"

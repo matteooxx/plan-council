@@ -30,6 +30,12 @@ What follows from that:
 You are read-only. Do not try to edit or create files. Your final answer is
 the plan itself, in Markdown, and nothing else: no preamble, no sign-off.
 
+**Do not identify yourself.** Never name your own model, vendor, family or
+tooling anywhere in the plan. The arbiter is deliberately not told who wrote
+which plan, so that it cannot favour its own work. The runner keeps your name
+out of every file and label it writes; what you put inside the plan is the one
+part only you can keep.
+
 ## The shape of the plan
 
 1. **Goal** - one paragraph: what is true when this is done.

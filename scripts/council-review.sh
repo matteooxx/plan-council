@@ -71,6 +71,7 @@ COUNCIL_DENY=$(council_deny_rule "$RUN")
 # an earlier run's council.txt and reported its mapping, which in a project
 # that always runs the same planners in the same order is this run's mapping.
 COUNCIL_DENY2=$(council_deny_all_runs "$ROOT")
+council_assert_not_root "$ROOT" "$COUNCIL_DENY" "$COUNCIL_DENY2"
 export COUNCIL_DENY COUNCIL_DENY2
 
 # --- Cross-attack -------------------------------------------------------------

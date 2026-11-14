@@ -90,6 +90,7 @@ COUNCIL_DENY=$(council_deny_rule "$OUT")
 # directory holds nothing yet.
 COUNCIL_DENY2=$COUNCIL_DENY
 COUNCIL_PHASE=plan
+council_assert_not_root "$ROOT" "$COUNCIL_DENY" "$COUNCIL_DENY2"
 export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
 council_check_deny_used "$FNS" || true
 

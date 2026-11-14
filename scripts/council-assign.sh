@@ -98,6 +98,7 @@ esac
 COUNCIL_DENY=$(council_deny_rule "$OUTDIR")
 COUNCIL_DENY2=$(council_deny_all_runs "$ROOT")
 COUNCIL_PHASE=assign
+council_assert_not_root "$ROOT" "$COUNCIL_DENY" "$COUNCIL_DENY2"
 export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
 council_check_deny_used arbiter || true
 council_say "assigning tasks (assigner: the configured arbiter, from $ROOT, effort $COUNCIL_ASSIGN_EFFORT)"

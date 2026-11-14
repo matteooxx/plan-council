@@ -54,6 +54,13 @@ ok "this one: $PLUGIN_ROOT (version ${MYVER:-unknown})"
 # the cache. Measured 2026-11-14: three copies, one of them a previous release.
 # An uninstall does not clear the cache, so the stale one outlives it.
 HOMEDIR=${HOME:-${USERPROFILE:-}}
+# Is the copy now running itself a deployed one, or a working checkout? The
+# distinction decides whether a same-version mismatch is a broken delivery or
+# simply work in progress.
+RUNNING_DEPLOYED=0
+case "$PLUGIN_ROOT/" in
+  "${HOMEDIR:-/nonexistent}/.claude/plugins/"*) RUNNING_DEPLOYED=1 ;;
+esac
 if [ -n "$HOMEDIR" ] && [ -d "$HOMEDIR/.claude/plugins" ]; then
   COPYLIST=$(mktemp 2>/dev/null || mktemp -t plancouncil) || COPYLIST=""
   if [ -n "$COPYLIST" ]; then
@@ -82,11 +89,24 @@ if [ -n "$HOMEDIR" ] && [ -d "$HOMEDIR/.claude/plugins" ]; then
           fi
         done
         if [ "$SAMEVER_DIFFERS" -eq 1 ]; then
-          bad "that copy declares the same version as this one ($over) but its code"
-          bad "DIFFERS. You cannot tell from the version which code you are running,"
-          bad "and 'claude plugin update' compares versions, not content, so it will"
-          bad "refuse to refresh. Fix it by raising the version and republishing, or"
-          bad "by uninstalling and reinstalling the plugin."
+          # Two cases, and only one is a fault. If THIS copy is itself deployed
+          # under ~/.claude/plugins, then two deployed copies disagree under one
+          # version number and nothing can tell them apart: a broken delivery.
+          # If this copy is a working checkout, differing from the installed one
+          # is just work in progress -- saying FAIL there would make the doctor
+          # red on every edit and teach people to ignore it.
+          if [ "$RUNNING_DEPLOYED" -eq 1 ]; then
+            bad "that copy declares the same version as this one ($over) but its code"
+            bad "DIFFERS. You cannot tell from the version which code you are running,"
+            bad "and 'claude plugin update' compares versions, not content, so it will"
+            bad "refuse to refresh. Fix it by raising the version and republishing, or"
+            bad "by uninstalling and reinstalling the plugin."
+          else
+            note "this is a working checkout and its code differs from that copy,"
+            note "which declares the same version ($over). Normal while you edit --"
+            note "but raise the version before publishing, or 'claude plugin update'"
+            note "will refuse to deliver the change."
+          fi
         fi
       fi
     done < "$COPYLIST"

@@ -137,7 +137,19 @@ of the spend first: with N planners a council is **2N + 1** long model runs,
 plus one for the assignment. With two planners that is five plus one. A cap of
 2 therefore caps the Claude side of a two-planner council at about 8. Say the
 real cost of a cap too: a run that hits it stops rather than finishing. Empty
-means no cap, which is the current default.
+means no cap, which is the shipped default: nothing is capped unless asked for.
+
+Say as well that a cap is **not a one-way door**, because a user who declines
+one for fear of being stuck with it has been told the wrong thing. It can be
+lifted for good by editing the one line, and for a single run by exporting an
+empty value:
+
+```sh
+COUNCIL_BUDGET_USD= council-plan.sh brief.md --root .
+```
+
+If the user says cost is not a concern, write no cap and say so plainly rather
+than writing a large number, which only looks like a limit.
 
 ## 7. Write the config
 
@@ -157,16 +169,30 @@ COUNCIL_PLANNERS="${COUNCIL_PLANNERS:-<chosen planners>}"
 COUNCIL_MODEL_CLAUDE="${COUNCIL_MODEL_CLAUDE:-<chosen>}"
 COUNCIL_MODEL_CLAUDE_ALT="${COUNCIL_MODEL_CLAUDE_ALT:-<chosen>}"
 COUNCIL_MODEL_ARBITER="${COUNCIL_MODEL_ARBITER:-<chosen>}"
-COUNCIL_MODEL_CODEX="${COUNCIL_MODEL_CODEX:-<chosen or empty>}"
+COUNCIL_MODEL_CODEX="${COUNCIL_MODEL_CODEX-<chosen or empty>}"
 COUNCIL_PLANNER_EFFORT="${COUNCIL_PLANNER_EFFORT:-<chosen>}"
 COUNCIL_ATTACK_EFFORT="${COUNCIL_ATTACK_EFFORT:-<chosen>}"
 COUNCIL_ARBITER_EFFORT="${COUNCIL_ARBITER_EFFORT:-<chosen>}"
 COUNCIL_ASSIGN_EFFORT="${COUNCIL_ASSIGN_EFFORT:-<chosen>}"
-COUNCIL_BUDGET_USD="${COUNCIL_BUDGET_USD:-<chosen or empty>}"
+COUNCIL_BUDGET_USD="${COUNCIL_BUDGET_USD-<chosen or empty>}"
 COUNCIL_RISK_FLOOR="${COUNCIL_RISK_FLOOR:-implementer}"
 
 . "$COUNCIL_PLUGIN_ROOT/config/council.conf"
 ```
+
+**Note the three lines without the colon.** `COUNCIL_BUDGET_USD`,
+`COUNCIL_MODEL_CODEX` and `COUNCIL_AGENT_DIRS` are the settings whose **empty
+value means something** — no cap, Codex's own default model, no extra agent
+directories. With `${VAR:-default}` an exported empty value counts as unset and
+the default comes back, so a user who set a cap could never say "no cap for
+this run": the run would instead refuse to start, reporting that the config
+overrode the environment. Written with `${VAR-default}`, this works:
+
+```sh
+COUNCIL_BUDGET_USD= council-plan.sh brief.md --root .
+```
+
+Every other setting keeps `${VAR:-default}`.
 
 If the chosen planner set needs a function the plugin does not ship, write it
 into this file above the `.` line, keeping the contract in
