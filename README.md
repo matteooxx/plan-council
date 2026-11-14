@@ -91,6 +91,28 @@ upgrade:
 /council-doctor
 ```
 
+### Updating, and why the version number is the delivery mechanism
+
+```
+claude plugin marketplace update plan-council
+claude plugin update plan-council
+```
+
+**`claude plugin update` compares versions, not content.** Measured
+2026-11-14: a fix merged to `main` without raising the version in
+`.claude-plugin/plugin.json` produced
+`✔ plan-council is already at the latest version (0.2.0)` and refreshed
+nothing, while `marketplace update` *did* fetch it. The installed copy and the
+published one then held different code under one version number — and the
+commands' rule for choosing between copies ("prefer the installed version,
+else the highest") picks the stale one, because the number cannot tell them
+apart.
+
+So: **every published change raises the version.** A merge without a bump is
+not a delivery. `/council-doctor` now fails when it finds another copy that
+declares this same version and holds different code, which is the one case the
+version rule cannot resolve on its own.
+
 ### Requirements
 
 - Claude Code (verified against 2.1.325).

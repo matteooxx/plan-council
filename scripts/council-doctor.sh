@@ -67,6 +67,28 @@ if [ -n "$HOMEDIR" ] && [ -d "$HOMEDIR/.claude/plugins" ]; then
         | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
       note "another copy: $odir (version ${over:-unknown})"
       OTHERS=$((OTHERS + 1))
+      # The dangerous case the version rule cannot catch: two copies that
+      # declare the SAME version and hold DIFFERENT code. Measured 2026-11-14:
+      # a fix was merged without raising the version, so "claude plugin update"
+      # answered "already at the latest version" and refreshed nothing, while
+      # the marketplace clone did carry the fix. The installed copy and the
+      # published one then differed under one version number, and "prefer the
+      # installed version, else the highest" selects the stale one.
+      if [ -n "$over" ] && [ "$over" = "${MYVER:-}" ]; then
+        SAMEVER_DIFFERS=0
+        for f in scripts/lib.sh scripts/council-doctor.sh; do
+          if [ -f "$odir/$f" ] && [ -f "$PLUGIN_ROOT/$f" ]; then
+            cmp -s "$odir/$f" "$PLUGIN_ROOT/$f" || SAMEVER_DIFFERS=1
+          fi
+        done
+        if [ "$SAMEVER_DIFFERS" -eq 1 ]; then
+          bad "that copy declares the same version as this one ($over) but its code"
+          bad "DIFFERS. You cannot tell from the version which code you are running,"
+          bad "and 'claude plugin update' compares versions, not content, so it will"
+          bad "refuse to refresh. Fix it by raising the version and republishing, or"
+          bad "by uninstalling and reinstalling the plugin."
+        fi
+      fi
     done < "$COPYLIST"
     rm -f "$COPYLIST"
     if [ "$OTHERS" -gt 0 ]; then
