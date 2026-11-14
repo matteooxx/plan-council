@@ -178,12 +178,42 @@ council_check_planners() {
 # Sets COUNCIL_DENY_UNCOVERED to the functions the rule cannot reach.
 # Returns non-zero only when a claude-driven function drops the rule, which is
 # a straightforward mistake in the config.
+#
+# The body is read from the config FILES, not from the shell. An earlier
+# version asked the shell with "type", which prints the body under bash and
+# only "is a shell function" under dash -- so it reported a false FAIL on a
+# correct config, under the very shell portability is claimed for. A check
+# that cries wolf is as bad as one that stays silent.
+council_function_body() {
+  awk -v fn="$1" '
+    index($0, fn "()") == 1 { inside = 1 }
+    inside { print }
+    inside && /^}/ { exit }
+  ' "$2" 2>/dev/null
+}
+
 council_check_deny_used() {
   _missing=""
+  _unknown=""
   COUNCIL_DENY_UNCOVERED=""
+  # The function may be defined in the config in use or in the plugin's own,
+  # which a project config is meant to source.
+  _files=$COUNCIL_CONFIG_USED
+  _plugin_cfg="${COUNCIL_PLUGIN_ROOT:-}/config/council.conf"
+  if [ -f "$_plugin_cfg" ] && [ "$_plugin_cfg" != "$COUNCIL_CONFIG_USED" ]; then
+    _files="$_files $_plugin_cfg"
+  fi
   for _fn in $1; do
     type "$_fn" >/dev/null 2>&1 || continue
-    _body=$(type "$_fn" 2>/dev/null)
+    _body=""
+    for _f in $_files; do
+      _body=$(council_function_body "$_fn" "$_f")
+      [ -n "$_body" ] && break
+    done
+    if [ -z "$_body" ]; then
+      _unknown="$_unknown $_fn"
+      continue
+    fi
     case "$_body" in
       *claude*)
         case "$_body" in
@@ -194,6 +224,9 @@ council_check_deny_used() {
       *) COUNCIL_DENY_UNCOVERED="$COUNCIL_DENY_UNCOVERED $_fn" ;;
     esac
   done
+  if [ -n "$_unknown" ]; then
+    council_say "note: could not find the definition of$_unknown in $COUNCIL_CONFIG_USED, so the deny rule was not checked for it. Unknown is not the same as fine."
+  fi
   if [ -n "$_missing" ]; then
     council_say "WARNING: these claude functions do not pass \$COUNCIL_DENY to their CLI, so they can read the run directory and learn which planner wrote which plan:$_missing"
     return 1
