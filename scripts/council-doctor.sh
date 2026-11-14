@@ -44,6 +44,43 @@ for s in "$SCRIPT_DIR"/*.sh; do
   fi
 done
 
+echo "Which copy is running"
+MYVER=$(tr -d '\r' < "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null \
+  | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+ok "this one: $PLUGIN_ROOT (version ${MYVER:-unknown})"
+# Other copies matter because ${CLAUDE_PLUGIN_ROOT} does not resolve, so the
+# commands fall back to a Glob under ~/.claude/plugins/ -- and that returns the
+# installed version, the marketplace clone, AND every older release still in
+# the cache. Measured 2026-11-14: three copies, one of them a previous release.
+# An uninstall does not clear the cache, so the stale one outlives it.
+HOMEDIR=${HOME:-${USERPROFILE:-}}
+if [ -n "$HOMEDIR" ] && [ -d "$HOMEDIR/.claude/plugins" ]; then
+  COPYLIST=$(mktemp 2>/dev/null || mktemp -t plancouncil) || COPYLIST=""
+  if [ -n "$COPYLIST" ]; then
+    find "$HOMEDIR/.claude/plugins" -name 'council-doctor.sh' 2>/dev/null > "$COPYLIST"
+    OTHERS=0
+    while IFS= read -r other; do
+      [ -n "$other" ] || continue
+      odir=$(dirname "$(dirname "$other")")
+      [ "$odir" = "$PLUGIN_ROOT" ] && continue
+      over=$(tr -d '\r' < "$odir/.claude-plugin/plugin.json" 2>/dev/null \
+        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+      note "another copy: $odir (version ${over:-unknown})"
+      OTHERS=$((OTHERS + 1))
+    done < "$COPYLIST"
+    rm -f "$COPYLIST"
+    if [ "$OTHERS" -gt 0 ]; then
+      note "$OTHERS other copy/copies here. A Glob for a script name under"
+      note "~/.claude/plugins/ can return any of them, a previous release included,"
+      note "and running the wrong one runs old code without saying so. The commands"
+      note "prefer the installed version; if you resolve a script by hand, check which"
+      note "version you picked. Old releases can be deleted from the plugin cache."
+    else
+      ok "no other copy of plan-council on this machine"
+    fi
+  fi
+fi
+
 echo "Config"
 council_load_config "$ROOT" "$PLUGIN_ROOT"
 ok "loaded $COUNCIL_CONFIG_USED"
