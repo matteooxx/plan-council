@@ -45,14 +45,14 @@ For those, plan once and use the execution discipline alone.
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install plan-council --marketplace <owner>/<repo>
+/plugin install plan-council --marketplace matteooxx/plan-council
 ```
 
 Answer `y` to add the marketplace, then choose a scope (user scope makes it
 available in every project). From a shell:
 
 ```
-claude plugin install plan-council --marketplace <owner>/<repo>
+claude plugin install plan-council --marketplace matteooxx/plan-council
 ```
 
 To try it from a local checkout without installing:

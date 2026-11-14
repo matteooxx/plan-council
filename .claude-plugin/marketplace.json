@@ -1,6 +1,6 @@
 {
   "name": "plan-council",
   "description": "plan-council: rival-model planning with a read-only arbiter, and execution discipline for subagents.",
-  "owner": { "name": "<your-name>" },
+  "owner": { "name": "matteooxx" },
   "plugins": [{ "name": "plan-council", "source": "./" }]
 }
