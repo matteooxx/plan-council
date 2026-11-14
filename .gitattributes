@@ -1,0 +1,9 @@
+# The scripts and the config are POSIX sh, sourced and executed as text.
+# CRLF breaks them, and not everywhere the same way, which is the worst case:
+# measured 2026-11-14, a CRLF copy still runs under Git Bash's sh but dies
+# under dash on its second line with "set: Illegal option -", because the
+# option becomes "-u" plus a carriage return. A clone made on Windows with
+# core.autocrlf=true and then used on Linux, in WSL or inside a container
+# would hit exactly that.
+*.sh text eol=lf
+*.conf text eol=lf
