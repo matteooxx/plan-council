@@ -100,7 +100,11 @@ COUNCIL_DENY2=$(council_deny_all_runs "$ROOT")
 COUNCIL_PHASE=assign
 council_assert_not_root "$ROOT" "$COUNCIL_DENY" "$COUNCIL_DENY2"
 export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
-council_check_deny_used arbiter || true
+# A warning here and deliberately so: the assigner is handed the plan and
+# the roster in its own prompt and no attribution is at stake, so a missing
+# rule costs nothing. The phases where it does cost refuse to start.
+council_check_deny_used arbiter \
+  || council_say "nothing here depends on that rule, so this run continues; the review phases would have refused to start."
 council_say "assigning tasks (assigner: the configured arbiter, from $ROOT, effort $COUNCIL_ASSIGN_EFFORT)"
 council_run_parallel "$ROOT" "$STAGE" "assign:arbiter"
 STATUS=$?

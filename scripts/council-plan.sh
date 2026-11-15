@@ -92,7 +92,7 @@ COUNCIL_DENY2=$COUNCIL_DENY
 COUNCIL_PHASE=plan
 council_assert_not_root "$ROOT" "$COUNCIL_DENY" "$COUNCIL_DENY2"
 export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
-council_check_deny_used "$FNS" || true
+council_require_deny_used "$FNS"
 
 council_say "context root: $ROOT"
 council_say "config:       $COUNCIL_CONFIG_USED"
