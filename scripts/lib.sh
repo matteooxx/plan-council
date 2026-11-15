@@ -137,6 +137,7 @@ council_load_config() {
   COUNCIL_DEALT=""
   _council_seats_dealt=""
   _council_deal=""
+  _council_fallback_seats=""
 
   # shellcheck disable=SC1090
   . "$_abs" || council_die "config failed to load: $_abs"
@@ -151,6 +152,17 @@ council_load_config() {
   : "${COUNCIL_ARBITER_EFFORT:=high}"
   : "${COUNCIL_ASSIGN_EFFORT:=medium}"
   : "${COUNCIL_BUDGET_USD:=}"
+  # Which seats are still empty here, so about to take the fallback below.
+  # Under a mode this is a seat that holds neither a ladder rung nor a hand pin
+  # once the config has returned -- whether the deal never reached it or a later
+  # line emptied it: the plugin's config skips its own seat defaults once the
+  # deal has run, so nothing else has filled it. council_recheck_seats refuses
+  # such a seat if it is in play.
+  _council_fallback_seats=""
+  for _v in COUNCIL_MODEL_CLAUDE COUNCIL_MODEL_CLAUDE_ALT COUNCIL_MODEL_ARBITER; do
+    eval "_sv=\${$_v-}"
+    [ -n "$_sv" ] || _council_fallback_seats="$_council_fallback_seats $_v"
+  done
   # Only so that a sparse config of the user's own cannot trip set -u. These
   # are not a recommendation: /council-setup asks, and council-detect.sh shows
   # what this machine actually has.
@@ -421,8 +433,50 @@ council_recheck_seats() {
   [ "${_council_seats_dealt:-}" = 1 ] || return 0
   council_noglob_on
   council_seat_scan
+  council_check_fallback_seats
   council_check_seat_models
   council_noglob_off
+  return 0
+}
+
+# council_check_fallback_seats -- refuses a seat in play on the fallback.
+#
+# Under a mode every seat in play takes a rung of the ladder or a hand pin.
+# A seat listed in _council_fallback_seats holds neither: it was unset or empty
+# once the config had returned, and only the plugin's last-resort default
+# filled it. This code sees that state, not how it came about, so the message
+# names what is observed and the shapes known to produce it, never a single
+# cause. Two such shapes are measured: a COUNCIL_PLANNERS line below the source
+# line (the deal never saw the seat), and a line below the source line that
+# empties a seat the deal did fill -- under 'standard' with ladder 'm1 m2 m3',
+# COUNCIL_MODEL_ARBITER="" there erases the m1 the deal gave it. Measured
+# 2026-11-15 on the code before this check: with COUNCIL_PLANNERS="claude
+# claude_alt" assigned below the source line, the deal ran on the earlier list,
+# never saw claude_alt, and the second planner loaded on claude-sonnet-5-5, a
+# model the ladder never named, with exit 0 -- even when the ladder was one
+# rung too short and the load had to die.
+#
+# Only seats in play are judged: the Claude planner seats council_seat_scan
+# collected, and the arbiter. With planners 'claude codex' the second Claude
+# seat is nobody's, and its value is nobody's business. Reads _claude_seats, so
+# it runs after council_seat_scan, with filename expansion off.
+#
+# A limit, measured 2026-11-15 and not fixable without reading the config's
+# text: a line below the source line that writes the fallback's OWN string --
+# a pasted COUNCIL_MODEL_CLAUDE_ALT="${COUNCIL_MODEL_CLAUDE_ALT:-claude-sonnet-5-5}",
+# or a wholesale copy of an older council.conf -- is indistinguishable, after
+# evaluation, from a deliberate hand pin on that model, and it loads. That is
+# the price of letting a deliberate late pin work (harness case c4). There is
+# no mode documentation yet in README.md, commands/, skills/ or prompts/:
+# when that step comes, this limit belongs in the user-facing docs.
+council_check_fallback_seats() {
+  for _seat in $_claude_seats COUNCIL_MODEL_ARBITER; do
+    case " ${_council_fallback_seats-} " in
+      *" $_seat "*)
+        eval "_sv=\${$_seat-}"
+        council_die "$_seat is in play under mode '$COUNCIL_MODE', but after the config it holds neither a ladder rung nor a hand pin: it is unset or empty, so it would run on the plugin's fallback '$_sv'. Under a mode every seat in play takes either a ladder rung or a hand pin. Two shapes are known to leave a seat like this, both on lines below the one that sources the plugin's config in $COUNCIL_CONFIG_USED: a COUNCIL_PLANNERS line there, so that the deal ran on the earlier planner list and never saw this seat; or a line there that empties or unsets $_seat after the deal. Move such a COUNCIL_PLANNERS line above the source line, remove such an emptying line, or pin $_seat by hand." ;;
+    esac
+  done
   return 0
 }
 
