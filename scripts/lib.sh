@@ -222,6 +222,20 @@ council_function_body() {
   ' "$2" 2>/dev/null
 }
 
+# Like council_check_deny_used, but refuses to start the run.
+#
+# Used in the planning phase as well as the review phases. Nothing is exposed
+# while the planners write -- the run directory is still empty -- but the same
+# functions attack later, when it is, so a config that cannot be blind is
+# better stopped before the plans are paid for than after. Pointed out by the
+# arbiter of a real council run: every call site ended in "|| true", so the
+# warning never stopped anything, and a planner missing the rule produced a
+# line of text and a full-price council whose blindness rested on nothing.
+council_require_deny_used() {
+  council_check_deny_used "$1" && return 0
+  council_die "that function can read the run directory, and with it which planner wrote which plan. Add \"\$COUNCIL_DENY\" and \"\$COUNCIL_DENY2\" to its --disallowedTools, as config/council.conf does. This was a warning that let the run continue; it stops the run now, because a council whose arbiter can look up the attribution is not worth paying for."
+}
+
 council_check_deny_used() {
   _missing=""
   _unknown=""

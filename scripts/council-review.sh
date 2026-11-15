@@ -95,7 +95,7 @@ if [ "$ARBITRATE_ONLY" -eq 0 ]; then
   done
   COUNCIL_PHASE=attack
   export COUNCIL_PHASE
-  council_check_deny_used "$FNS" || true
+  council_require_deny_used "$FNS"
   council_say "cross-attack: $COUNT attacks in parallel, from $ROOT (effort $COUNCIL_ATTACK_EFFORT)"
   # shellcheck disable=SC2086
   council_run_parallel "$ROOT" "$STAGE" $JOBS
@@ -135,7 +135,7 @@ done
 
 COUNCIL_PHASE=arbitrate
 export COUNCIL_PHASE
-council_check_deny_used arbiter || true
+council_require_deny_used arbiter
 council_say "arbitration: running from $ROOT (effort $COUNCIL_ARBITER_EFFORT)"
 council_run_parallel "$ROOT" "$STAGE" "arbiter:arbiter"
 STATUS=$?

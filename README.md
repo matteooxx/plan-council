@@ -621,6 +621,13 @@ agreeing. One run is not a track record.
   whatever that CLI grants. With Codex as a planner, the attack phase's
   blindness rests on the prompt. `/council-doctor` names every function the rule
   cannot cover.
+  A function that drives `claude` and simply **drops** the rule is a different
+  case, and no longer a tolerated one: planning and both review phases refuse
+  to start, naming the function, before a single model run is paid for. Only
+  `/council-assign` continues with a warning, because no attribution is at
+  stake there. Until 0.2.3 every call site ended in `|| true`, so the warning
+  stopped nothing — found by the arbiter of a real council run, which grepped
+  the scripts and said so.
   A deny rule written with an MSYS path (`/c/...`) matches nothing and blocks
   nothing, in silence — `cygpath -m` produces the form that is honoured, which
   is why `cygpath` is checked for on Windows.
