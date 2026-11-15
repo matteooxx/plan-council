@@ -13,8 +13,10 @@
 # - No backquote characters anywhere in these scripts. Use $( ).
 
 # Every setting the scripts read. Each must be written in the config as
-# VAR="${VAR:-default}" so an exported value survives being sourced.
-COUNCIL_SETTINGS="COUNCIL_PLANNERS COUNCIL_RISK_FLOOR COUNCIL_AGENT_DIRS COUNCIL_MIN_BYTES COUNCIL_PLANNER_EFFORT COUNCIL_ATTACK_EFFORT COUNCIL_ARBITER_EFFORT COUNCIL_ASSIGN_EFFORT COUNCIL_BUDGET_USD COUNCIL_MODEL_CLAUDE COUNCIL_MODEL_CLAUDE_ALT COUNCIL_MODEL_ARBITER COUNCIL_MODEL_CODEX"
+# VAR="${VAR:-default}" so an exported value survives being sourced -- except
+# the ones whose EMPTY value means something, which take VAR="${VAR-default}":
+# COUNCIL_BUDGET_USD, COUNCIL_MODEL_CODEX, COUNCIL_AGENT_DIRS and COUNCIL_MODE.
+COUNCIL_SETTINGS="COUNCIL_PLANNERS COUNCIL_RISK_FLOOR COUNCIL_AGENT_DIRS COUNCIL_MIN_BYTES COUNCIL_PLANNER_EFFORT COUNCIL_ATTACK_EFFORT COUNCIL_ARBITER_EFFORT COUNCIL_ASSIGN_EFFORT COUNCIL_BUDGET_USD COUNCIL_MODEL_CLAUDE COUNCIL_MODEL_CLAUDE_ALT COUNCIL_MODEL_ARBITER COUNCIL_MODEL_CODEX COUNCIL_MODE COUNCIL_MODEL_LADDER COUNCIL_MODEL_LADDER_DATE COUNCIL_STRONGEST_FOR"
 
 council_say() { printf 'plan-council: %s\n' "$*" >&2; }
 council_die() { printf 'plan-council: error: %s\n' "$*" >&2; exit 1; }
@@ -127,6 +129,15 @@ council_load_config() {
     fi
   done
 
+  # Cleared before the load so a value left by an earlier load cannot satisfy
+  # the "mode asked for but never applied" check below, nor make the recheck
+  # after the load believe this load dealt the seats, nor give this load a
+  # dealt record it did not deal.
+  COUNCIL_MODE_APPLIED=""
+  COUNCIL_DEALT=""
+  _council_seats_dealt=""
+  _council_deal=""
+
   # shellcheck disable=SC1090
   . "$_abs" || council_die "config failed to load: $_abs"
 
@@ -147,6 +158,12 @@ council_load_config() {
   : "${COUNCIL_MODEL_CLAUDE_ALT:=claude-sonnet-5-5}"
   : "${COUNCIL_MODEL_ARBITER:=claude-opus-5-5}"
   : "${COUNCIL_MODEL_CODEX:=}"
+  # COUNCIL_MODE uses the colon-less form: an empty value means "no mode", and
+  # that has to survive being exported for a single run.
+  : "${COUNCIL_MODE=}"
+  : "${COUNCIL_MODEL_LADDER:=}"
+  : "${COUNCIL_MODEL_LADDER_DATE:=}"
+  : "${COUNCIL_STRONGEST_FOR:=}"
   : "${COUNCIL_DENY:=}"
   : "${COUNCIL_DENY2:=$COUNCIL_DENY}"
   COUNCIL_CONFIG_USED=$_abs
@@ -173,7 +190,311 @@ council_load_config() {
       council_die "$_abs overrode $_v. The environment set it to '$_before'; after the config it is '$_after'. Write that line as $_v=\"$_form\" so an exported value survives, or unset $_v before this run.$_why A setting ignored in silence is the failure this method exists to prevent."
     fi
   done
+  # A mode that was asked for and never applied means the config in use never
+  # sourced the plugin's own, which is what calls council_apply_mode. Refusing
+  # is the only honest answer: otherwise the run would use plugin defaults
+  # while the user believes a mode is in effect.
+  if [ -n "${COUNCIL_MODE-}" ] && [ -z "${COUNCIL_MODE_APPLIED-}" ]; then
+    council_die "COUNCIL_MODE is '$COUNCIL_MODE' but no mode was applied. $_abs must source the plugin's own config, which is what applies a mode: add '. \"\$COUNCIL_PLUGIN_ROOT/config/council.conf\"' to it."
+  fi
+
+  # The deal's refusals, re-run on the values that are actually in effect, and
+  # the dealt record made to agree with them.
+  #
+  # A project config is a delta: it sets a few values and then sources the
+  # plugin's own config, which is what deals the ladder. So anything it assigns
+  # AFTER that source line is assigned after the deal and after every check
+  # inside it, and a check that runs only inside the deal can be bypassed by
+  # moving a line down. Measured 2026-11-15 on the code this replaces: with the
+  # planner list and both Claude model IDs assigned after the source line,
+  # COUNCIL_PLANNERS="claude claude_alt" with both IDs 'm1' loaded with three
+  # seats on one model and exit 0, and COUNCIL_PLANNERS="claude fable" under a
+  # mode loaded without 'fable' ever being named. Both are refused here.
+  council_recheck_seats
+  council_refresh_dealt
+
   [ -n "$_kept" ] && council_say "from the environment, and still in effect after the config:$_kept"
+  return 0
+}
+
+# council_apply_mode -- called from config/council.conf, near its top.
+#
+# A mode is one more link in the chain that already exists, not a second chain:
+# the mode file's lines use the "${VAR:-default}" form, so anything the
+# environment or a project config set earlier still wins, and the plugin's own
+# defaults still come last. The order stays environment, project, mode, plugin.
+#
+# A mode file may set the four per-phase efforts and COUNCIL_STRONGEST_FOR.
+# It may never hold a model ID, a planner list or a dollar figure: an ID in a
+# shipped file breaks on accounts that lack that model, and no per-run cost has
+# ever been measured.
+council_apply_mode() {
+  [ -n "${COUNCIL_MODE-}" ] || return 0
+
+  case "$COUNCIL_MODE" in
+    *[!A-Za-z0-9_-]*)
+      council_die "mode name '$COUNCIL_MODE' may use only letters, digits, _ and -" ;;
+  esac
+
+  _modedir="${COUNCIL_PLUGIN_ROOT:-}/config/modes"
+  _modefile="$_modedir/$COUNCIL_MODE.conf"
+  if [ ! -f "$_modefile" ]; then
+    _have=""
+    for _f in "$_modedir"/*.conf; do
+      [ -f "$_f" ] || continue
+      _have="$_have $(basename "$_f" .conf)"
+    done
+    council_die "unknown mode '$COUNCIL_MODE'. The modes that exist are:${_have:- none found in $_modedir}"
+  fi
+
+  # shellcheck disable=SC1090
+  . "$_modefile" || council_die "mode failed to load: $_modefile"
+  COUNCIL_MODE_APPLIED=$COUNCIL_MODE
+  council_deal_seats
+}
+
+# council_deal_seats -- deals the user's own ladder to the seats.
+#
+# "Capability" is position in COUNCIL_MODEL_LADDER and nothing else: the exact
+# IDs that answered the setup probe, in an order the user confirmed, dated by
+# COUNCIL_MODEL_LADDER_DATE. Nothing here compares models; it only counts
+# along the user's line. A draw without replacement keeps the planners
+# different, which is the whole product of the method, and the second planner
+# always picks last.
+#
+#   COUNCIL_STRONGEST_FOR=planning     first planner, arbiter, second planner
+#   COUNCIL_STRONGEST_FOR=arbitration  arbiter, first planner, second planner
+#
+# A seat already set -- by the environment, a project config or a hand pin --
+# keeps its value and takes no rung. That is the only way to accept a ladder
+# shorter than the seats in play.
+council_deal_seats() {
+  [ -n "${COUNCIL_STRONGEST_FOR-}" ] || return 0
+
+  case "$COUNCIL_STRONGEST_FOR" in
+    planning|arbitration) ;;
+    *) council_die "COUNCIL_STRONGEST_FOR is '$COUNCIL_STRONGEST_FOR'; it must be 'planning' or 'arbitration' (set by the mode file)" ;;
+  esac
+
+  [ -n "${COUNCIL_MODEL_LADDER-}" ] || council_die "mode '$COUNCIL_MODE' deals a model ladder to the seats, but COUNCIL_MODEL_LADDER is empty. Run /council-setup to build one from the models that answer on this machine, or set the model settings by hand and use no mode."
+
+  # Filename expansion off for the whole deal. Every loop below splits a
+  # setting into words with the shell, and the shell expands a word holding a
+  # glob character against the current directory BEFORE the case that
+  # validates it ever sees it. Measured 2026-11-15: ladder 'm1 *' with the
+  # current directory inside config/ dealt the filename 'council.conf' as a
+  # model ID and exited 0. With -f the entry arrives as the literal '*' and
+  # the validation below names it. The deal must not depend on where the run
+  # was started from.
+  council_noglob_on
+
+  _seen=" "
+  for _m in $COUNCIL_MODEL_LADDER; do
+    case "$_m" in
+      *[!A-Za-z0-9._-]*) council_die "ladder entry '$_m' may use only letters, digits, dot, _ and -" ;;
+    esac
+    case "$_seen" in
+      *" $_m "*) council_die "ladder entry '$_m' is listed twice; a draw without replacement cannot deal the same model to two seats" ;;
+    esac
+    _seen="$_seen$_m "
+  done
+
+  council_seat_scan
+  _council_seats_dealt=1
+
+  # Pick order.
+  # shellcheck disable=SC2086
+  set -- $_claude_seats
+  if [ "$COUNCIL_STRONGEST_FOR" = planning ] && [ $# -ge 1 ]; then
+    _first=$1
+    shift
+    _order="$_first COUNCIL_MODEL_ARBITER $*"
+  else
+    _order="COUNCIL_MODEL_ARBITER$_claude_seats"
+  fi
+
+  # What the deal did, seat by seat, for council_refresh_dealt: NAME= for a
+  # seat it left alone, NAME=ID for a seat it dealt. NAME is one of the seat
+  # names in _order, which this code builds from literals, and ID is a ladder
+  # entry validated above, so no word of this list holds a space, a glob
+  # character or anything taken from a seat's own value.
+  _rungs=$COUNCIL_MODEL_LADDER
+  for _seat in $_order; do
+    eval "_cur=\${$_seat-}"
+    if [ -n "$_cur" ]; then
+      _council_deal="$_council_deal $_seat="
+      continue
+    fi
+    # shellcheck disable=SC2086
+    set -- $_rungs
+    if [ $# -lt 1 ]; then
+      council_die "mode '$COUNCIL_MODE' has no model left for $_seat: the ladder is '$COUNCIL_MODEL_LADDER'. Add a model to the ladder, or pin $_seat by hand -- a pinned seat keeps its value and takes no rung."
+    fi
+    _id=$1
+    shift
+    _rungs=$*
+    eval "$_seat=\$_id"
+    _council_deal="$_council_deal $_seat=$_id"
+  done
+
+  council_check_seat_models
+  council_noglob_off
+  return 0
+}
+
+# Filename expansion off, and back to whatever it was.
+#
+# Both the deal and the recheck after the config split settings into words with
+# the shell, which is also where the shell expands globs. These are not nested:
+# each on is followed by its own off, or by a council_die that leaves the shell
+# altogether.
+council_noglob_on() {
+  case $- in
+    *f*) _noglob_was=1 ;;
+    *)   _noglob_was=0 ;;
+  esac
+  set -f
+}
+
+council_noglob_off() {
+  [ "${_noglob_was:-0}" = 1 ] || set +f
+}
+
+# council_seat_scan -- the Claude planner seats, in COUNCIL_PLANNERS order.
+#
+# codex takes a seat in the council but never a rung on the ladder: its model
+# is its own business and the ladder cannot rank it.
+#
+# Sets _claude_seats, _has_claude and _has_alt. Refuses a planner no mode can
+# seat. Needs filename expansion off: see council_noglob_on.
+council_seat_scan() {
+  _claude_seats=""
+  _has_claude=0
+  _has_alt=0
+  for _p in $COUNCIL_PLANNERS; do
+    case "$_p" in
+      claude)     _claude_seats="$_claude_seats COUNCIL_MODEL_CLAUDE"; _has_claude=1 ;;
+      claude_alt) _claude_seats="$_claude_seats COUNCIL_MODEL_CLAUDE_ALT"; _has_alt=1 ;;
+      codex)      ;;
+      *) council_die "under a mode, plan-council seats only the planners 'claude', 'claude_alt' and 'codex'; '$_p' is none of them. A planner whose function pins its own model ID, as planner_fable does, could silently take a seat the ladder already dealt. Drop the mode to use it, or rename it to one of the three." ;;
+    esac
+  done
+}
+
+# council_check_seat_models -- refuses two Claude planners on one model ID.
+#
+# Two planners on one model are two plans that agree at twice the price, so
+# this refuses rather than warns -- hand pins included. The arbiter sharing a
+# planner's model is only discouraged ("prefer a model that is neither
+# planner"), so that loads and is not refused here.
+#
+# Reads _has_claude, _has_alt and the two Claude model settings, so it judges
+# whatever is in effect when it is called: once during the deal, and once more
+# after the config has finished, where a late assignment is visible.
+council_check_seat_models() {
+  if [ "${_has_claude:-0}" -eq 1 ] && [ "${_has_alt:-0}" -eq 1 ]; then
+    eval "_a=\${COUNCIL_MODEL_CLAUDE-}"
+    eval "_b=\${COUNCIL_MODEL_CLAUDE_ALT-}"
+    if [ -n "$_a" ] && [ "$_a" = "$_b" ]; then
+      council_die "planners 'claude' and 'claude_alt' would both run '$_a': COUNCIL_MODEL_CLAUDE and COUNCIL_MODEL_CLAUDE_ALT hold the same ID. Disagreement between different models is what this method produces, so two planners on one model is refused: lengthen the ladder, or pin one of them by hand to a different model."
+    fi
+  fi
+  return 0
+}
+
+# council_recheck_seats -- the deal's refusals, on the values in effect.
+#
+# Called from council_load_config once the config has returned. It runs only
+# when this load actually dealt the seats: with no mode nothing is dealt, the
+# seats are the user's own business, and this must then add no output, no
+# refusal and no difference from a run without modes at all.
+#
+# The marker is set by the deal rather than read back from
+# COUNCIL_STRONGEST_FOR, a setting a config may well assign after its source
+# line for its own reasons -- clearing it there would have handed back the same
+# bypass one line lower. The marker's name is kept out of the COUNCIL_
+# namespace for the same reason: a config line that assigned it by accident
+# re-opened both refusals. That is all this protects against. A config is
+# sourced shell code; one that sets this marker, or redefines this function, on
+# purpose gets what it asks for, and nothing in sh can prevent that.
+council_recheck_seats() {
+  [ "${_council_seats_dealt:-}" = 1 ] || return 0
+  council_noglob_on
+  council_seat_scan
+  council_check_seat_models
+  council_noglob_off
+  return 0
+}
+
+# council_refresh_dealt -- writes COUNCIL_DEALT from what is in effect.
+#
+# The deal runs while the config is still being sourced, so a line after the
+# source line can change a seat afterwards. Measured 2026-11-15: a record
+# written during the deal said COUNCIL_MODEL_CLAUDE=m2 while a later line had
+# set it to m1. So the record is written here, once the config has returned,
+# from the deal's own seat list (_council_deal) and the current value of each
+# seat.
+#
+# It is never parsed back out of COUNCIL_DEALT. An earlier version split that
+# record on whitespace and evaluated the text before each '='; a seat value is
+# not validated, so a value holding a space produced a fragment that reached
+# eval: a trailing space in an exported model ID made council_load_config fail
+# (rc=127 under sh, rc=2 under dash, measured 2026-11-15).
+#
+# The invariant, once council_load_config has returned successfully: every
+# NAME=value in COUNCIL_DEALT equals the current value of $NAME. A value
+# holding whitespace is written in single quotes, with a quote inside it as
+# '\'', so that where one entry ends stays visible. Each entry ends in what the
+# deal did with that seat:
+#   (kept)        the seat already had a value, and the deal left it alone;
+#   no tag        the deal dealt this rung, and it is still in effect;
+#   (overridden)  the deal dealt a rung, and a later line set this value.
+# Nothing reads the record yet, so no message promises that it is reported.
+council_refresh_dealt() {
+  [ -n "${_council_deal:-}" ] || return 0
+  # No word of _council_deal can hold a glob character (see the deal), and a
+  # seat value is never split here, so this needs no council_noglob_on.
+  _rec=""
+  for _e in $_council_deal; do
+    _n=${_e%%=*}
+    _d=${_e#*=}
+    eval "_ev=\${$_n-}"
+    if [ -z "$_d" ]; then
+      _tag='(kept)'
+    elif [ "$_ev" = "$_d" ]; then
+      _tag=''
+    else
+      _tag='(overridden)'
+    fi
+    council_record_value "$_ev"
+    _rec="$_rec $_n=$_rv$_tag"
+  done
+  COUNCIL_DEALT=$_rec
+  return 0
+}
+
+# council_record_value VALUE -- sets _rv to VALUE as one entry of the record:
+# unchanged, or in single quotes when it holds whitespace.
+council_record_value() {
+  _rv=$1
+  _ws=$(printf ' \t\n.')
+  _ws=${_ws%.}
+  case "$_rv" in
+    *["$_ws"]*) ;;
+    *) return 0 ;;
+  esac
+  _rv="'"
+  _rest=$1
+  while :; do
+    case "$_rest" in
+      *"'"*)
+        _rv="$_rv${_rest%%"'"*}'\\''"
+        _rest=${_rest#*"'"} ;;
+      *)
+        _rv="$_rv$_rest'"
+        break ;;
+    esac
+  done
   return 0
 }
 
