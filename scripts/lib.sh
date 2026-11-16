@@ -135,6 +135,8 @@ council_load_config() {
   # dealt record it did not deal.
   COUNCIL_MODE_APPLIED=""
   COUNCIL_DEALT=""
+  _council_shown=""
+  _council_except=""
   _council_seats_dealt=""
   _council_deal=""
   _council_fallback_seats=""
@@ -224,6 +226,7 @@ council_load_config() {
   # mode loaded without 'fable' ever being named. Both are refused here.
   council_recheck_seats
   council_refresh_dealt
+  council_announce_outcome
 
   [ -n "$_kept" ] && council_say "from the environment, and still in effect after the config:$_kept"
   return 0
@@ -503,12 +506,20 @@ council_check_fallback_seats() {
 #   (kept)        the seat already had a value, and the deal left it alone;
 #   no tag        the deal dealt this rung, and it is still in effect;
 #   (overridden)  the deal dealt a rung, and a later line set this value.
-# Nothing reads the record yet, so no message promises that it is reported.
+#
+# The same pass also builds the two texts council_announce_outcome prints, so
+# the announcement and the record come from one computation of the tag:
+#   _council_shown   every seat with the value in effect, no tags;
+#   _council_except  the seats not dealt from the ladder, each with its value
+#                    and which of the two cases it is, one per entry.
+# Nothing else reads the record, so no message promises that it is reported.
 council_refresh_dealt() {
   [ -n "${_council_deal:-}" ] || return 0
   # No word of _council_deal can hold a glob character (see the deal), and a
   # seat value is never split here, so this needs no council_noglob_on.
   _rec=""
+  _council_shown=""
+  _council_except=""
   for _e in $_council_deal; do
     _n=${_e%%=*}
     _d=${_e#*=}
@@ -522,8 +533,40 @@ council_refresh_dealt() {
     fi
     council_record_value "$_ev"
     _rec="$_rec $_n=$_rv$_tag"
+    _council_shown="$_council_shown $_n=$_rv"
+    case "$_tag" in
+      '(kept)')       _council_except="$_council_except $_n=$_rv (the seat had a value when the deal ran, so it took no rung);" ;;
+      '(overridden)') _council_except="$_council_except $_n=$_rv (dealt from the ladder, then changed by a later line);" ;;
+    esac
   done
   COUNCIL_DEALT=$_rec
+  return 0
+}
+
+# council_announce_outcome -- tells the user what the load did, on stderr.
+#
+# Display only: it reads, it never assigns a setting and it never refuses. It
+# prints from what council_refresh_dealt built and compares nothing itself. With
+# no mode and no ladder it prints nothing at all.
+#
+# The ladder date is shown because the ladder is the user's own order and is
+# only as current as that date; nothing here checks the models still answer.
+council_announce_outcome() {
+  if [ -n "${COUNCIL_DEALT:-}" ]; then
+    if [ -n "${COUNCIL_MODEL_LADDER_DATE:-}" ]; then
+      _dt="ladder dated $COUNCIL_MODEL_LADDER_DATE; your own order, as old as its date"
+    else
+      _dt="ladder with no date set, so its age is unknown; your own order"
+    fi
+    # The ? below is reachable only by a config that blanks COUNCIL_MODE_APPLIED
+    # itself; that is tampering with a COUNCIL_ name and is not defended against.
+    council_say "mode ${COUNCIL_MODE_APPLIED:-?} seats:$_council_shown ($_dt)"
+    if [ -n "${_council_except:-}" ]; then
+      council_say "not dealt from the ladder:${_council_except%;}"
+    fi
+  elif [ -n "${COUNCIL_MODEL_LADDER:-}" ]; then
+    council_say "COUNCIL_MODEL_LADDER is set but no seat was dealt from it, so it was not used; a ladder is dealt only by a mode that sets COUNCIL_STRONGEST_FOR. The ladder changed no model setting."
+  fi
   return 0
 }
 
