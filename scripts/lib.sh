@@ -757,6 +757,89 @@ council_manifest_get() {
   sed -n "s/^$2=//p" "$1" | head -n 1
 }
 
+# council_codex_announced_model LOG -- prints the model Codex ANNOUNCED in the
+# banner at the top of its own stderr log, or 'unknown'.
+#
+# The banner, measured on codex-cli 0.162.1 (a kept log of a real run):
+#     1  OpenAI Codex v0.162.1
+#     2  --------
+#     3  workdir: ...
+#     4  model: gpt-6-luna
+#        ...
+#    11  --------
+#    12  user
+#    13  <the prompt, echoed verbatim>
+# From the line after the second separator Codex echoes the prompt, and the
+# prompt holds the brief. A parser that read past that separator would let a
+# brief containing "model: something" write that name into council.txt: a
+# prompt-injection path into the run record. So the banner is trusted only
+# when it starts on line 1 with Codex's own first line and line 2 is the
+# separator; from line 3 every line must be a banner field -- lower-case
+# words, a colon and a space -- until the closing separator; 'model:' is read
+# only among those fields; and nothing at or below the first line that is
+# neither a field nor the separator is ever looked at. No banner, a line that
+# is not a field before the closing separator, no closing separator, no model
+# line, two model lines that disagree, or a value outside letters, digits and
+# . _ : / - all give 'unknown'.
+#
+# What that guarantees, and what it rests on: Codex echoes the prompt starting
+# from its first line (measured on 0.162.1, after its own 'user' line, which is
+# not a field either); the plugin's planner_codex hands Codex the prompt on
+# stdin unchanged; and the prompt starts with prompts/plan.md, whose first
+# line is a Markdown heading and not a field (council-plan.sh refuses, before
+# any planner is called, a prompt whose first line is one: see
+# council_prompt_opens_with_field). Any echo of the prompt therefore ends the
+# banner before the brief is reached, whether or not Codex closes the banner
+# first, so no line of the brief is read as the banner. It stops holding only
+# if a Codex release printed part of the prompt without its first line ahead
+# of it and inside the banner's run of fields. A banner Codex itself changes
+# in any other way records 'unknown' or the model line it printed.
+#
+# "Announced", never "served". Measured 2026-11-15 (task R2): codex exec -m ID
+# does change this line, but it reports what was ASKED FOR, not what answered:
+# a nonexistent ID is printed here verbatim, with a "Model metadata ... not
+# found" warning below the banner, and Codex exits 101.
+#
+# Shared on purpose: council-detect.sh is to call this same function rather
+# than carry a second parser.
+#
+# What a banner field looks like, as an awk ERE: lower-case words, a colon and
+# a space. Defined once because two checks must agree on it: the parser below
+# reads only lines that match it, and council_prompt_opens_with_field refuses a
+# prompt whose first line matches it.
+COUNCIL_BANNER_FIELD='^[a-z][a-z ]*: '
+council_codex_announced_model() {
+  _cam=$(awk -v field="$COUNCIL_BANNER_FIELD" '
+    { sub(/\r$/, "") }
+    NR == 1 { if ($0 !~ /^OpenAI Codex/) exit; next }
+    NR == 2 { if ($0 != "--------") exit; next }
+    $0 == "--------" { closed = 1; exit }
+    $0 !~ field { exit }
+    /^model: / {
+      v = substr($0, 8)
+      sub(/[ \t]+$/, "", v)
+      if (seen && v != m) bad = 1
+      m = v
+      seen = 1
+    }
+    END { if (closed && seen && !bad) print m }
+  ' "$1" 2>/dev/null)
+  case "$_cam" in
+    ''|*[!A-Za-z0-9._:/-]*) printf 'unknown\n' ;;
+    *) printf '%s\n' "$_cam" ;;
+  esac
+}
+
+# council_prompt_opens_with_field FILE -- true when FILE's first line, read the
+# way the parser reads it (a trailing CR dropped), is shaped like a banner
+# field. An empty or unreadable FILE is not. council-plan.sh uses this to
+# refuse a prompt that an echo into Codex's log would extend the banner with.
+council_prompt_opens_with_field() {
+  [ "$(awk -v field="$COUNCIL_BANNER_FIELD" '
+    { sub(/\r$/, ""); if ($0 ~ field) print "field"; exit }
+  ' "$1" 2>/dev/null)" = field ]
+}
+
 # Run one function per job in parallel, from the context root, feeding each
 # its own prompt on stdin. Jobs are "label:function" words; prompts are
 # $STAGE/prompt-<label>.md and answers land in $STAGE/answer-<label>.md.

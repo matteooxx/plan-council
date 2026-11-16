@@ -61,6 +61,16 @@ PROMPT="$STAGE/prompt.md"
   printf '\n'
 } > "$PROMPT"
 [ "$(council_size "$PROMPT")" -gt "$(council_size "$BRIEF_ABS")" ] || council_die "prompt assembly failed: $PROMPT"
+# Codex echoes this prompt into the stderr log that council_codex_announced_model
+# reads the planner's model from, and that parser trusts the banner only up to
+# the first line that is not shaped like a field. The prompt's first line must
+# therefore not be shaped like one, or the echo would carry on the banner's run
+# of fields: checked here, on the bytes every planner will get, before any is
+# called. Only the first line: when it is not a field the parser reads no line
+# of the prompt at all, whatever follows.
+if council_prompt_opens_with_field "$PROMPT"; then
+  council_die "the prompt's first line, which is the first line of $PLUGIN_ROOT/prompts/plan.md, is shaped like a field of Codex's stderr banner (lower-case words, a colon and a space). Codex echoes the prompt into the log the run record reads Codex's model from, so a prompt that opens like a field could let the brief be read as part of that banner. Make the first line of prompts/plan.md something else, such as the Markdown heading it ships with. Nothing has been run."
+fi
 
 # Jobs are labelled by letter, never by planner name: the stage files and the
 # published logs then carry a letter, so no log attributes a plan to a model.
@@ -112,12 +122,55 @@ cp "$BRIEF_ABS" "$OUT/brief.md"
   printf 'brief=%s\n' "$BRIEF_ABS"
   printf 'config=%s\n' "$COUNCIL_CONFIG_USED"
   printf 'created=%s\n' "$(date)"
+  # The mode that dealt the seats (empty: no mode, the by-hand path), and the
+  # ladder it drew from. council-review.sh reads mode= to decide whether to
+  # check that each Claude planner still attacks on the model it planned with.
+  printf 'mode=%s\n' "$COUNCIL_MODE_APPLIED"
+  printf 'ladder=%s\n' "$COUNCIL_MODEL_LADDER"
 } > "$OUT/council.txt"
+# Which model each planner ran, as far as plan-council can know it. Every
+# model.<letter>= line has a model.<letter>.from= line saying where the value
+# came from, because none of them is proof of what answered:
+#   claude, claude_alt  the setting in effect, which the plugin's own planner
+#                       functions pass as --model (a project config that
+#                       redefines planner_<name> may pass something else, and
+#                       this script cannot see that);
+#   codex               the model Codex ANNOUNCED in its own stderr banner (see
+#                       council_codex_announced_model), or 'unknown';
+#   anything else       'unknown': its function is the config's business.
+#
+# There is deliberately no refusal when COUNCIL_MODEL_CODEX and the announced
+# model differ. Measured 2026-11-15 (task R2): the banner echoes the -m value
+# verbatim, even for an ID that does not exist, so pin and banner can only
+# agree and such a check could never fire for the reason it would claim. The
+# case it would be meant to catch -- an ID Codex does not have -- already makes
+# Codex exit 101, so that planner fails and this run stops on its own. Record
+# only.
 i=0
 for name in $COUNCIL_PLANNERS; do
   i=$((i + 1))
   letter=$(council_letter "$i")
   printf 'planner.%s=%s\n' "$letter" "$name" >> "$OUT/council.txt"
+  case "$name" in
+    claude)
+      _pm=$COUNCIL_MODEL_CLAUDE
+      _pf="the setting COUNCIL_MODEL_CLAUDE in effect for this run, which the plugin's own planner_claude passes as --model; what was asked for, not proof of what answered" ;;
+    claude_alt)
+      _pm=$COUNCIL_MODEL_CLAUDE_ALT
+      _pf="the setting COUNCIL_MODEL_CLAUDE_ALT in effect for this run, which the plugin's own planner_claude_alt passes as --model; what was asked for, not proof of what answered" ;;
+    codex)
+      _pm=$(council_codex_announced_model "$STAGE/stderr-$letter.log")
+      if [ "$_pm" = unknown ]; then
+        _pf="no model read: logs/plan-stderr-$letter.log does not start with a complete Codex banner (Codex's first line, a separator, field lines only, a closing separator) whose model lines give one well-formed value"
+      else
+        _pf="announced by Codex in the banner of logs/plan-stderr-$letter.log; what was asked for, not proof of what answered"
+      fi ;;
+    *)
+      _pm=unknown
+      _pf="plan-council cannot tell which model planner_$name runs" ;;
+  esac
+  printf 'model.%s=%s\n' "$letter" "$_pm" >> "$OUT/council.txt"
+  printf 'model.%s.from=%s\n' "$letter" "$_pf" >> "$OUT/council.txt"
   if council_answer_ok "$STAGE/answer-$letter.md"; then
     cp "$STAGE/answer-$letter.md" "$OUT/plan-$letter.md"
   fi
