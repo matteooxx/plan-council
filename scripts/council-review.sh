@@ -50,6 +50,66 @@ for L in $LETTERS; do
 done
 [ "$COUNT" -ge 2 ] || council_die "need at least two plans, found $COUNT"
 
+# --- Each planner attacks with its own model ----------------------------------
+# The config is reloaded here and planner_<name> is called with whatever is in
+# effect now, while this script promises that each planner attacks with the
+# model it planned with. Under a mode the seats are dealt on every load, so a
+# one-run COUNCIL_MODE=, or a mode file whose COUNCIL_STRONGEST_FOR changed,
+# moves a Claude planner to another model in silence. So the model in effect for
+# each Claude planner is compared with the model.<letter>= council-plan.sh
+# recorded, and a difference stops the review here, before anything is paid
+# for. The scope is Decision 7's, and each clause has its reason:
+#   - only with a mode, recorded or current: without one the by-hand path is
+#     what the first arbitration left it;
+#   - only when attacks will run: --arbitrate-only calls no planner;
+#   - only when council.txt records planner models at all, so a run made before
+#     those lines existed still reviews.
+# Only claude and claude_alt are compared: Codex's recorded model is what it
+# announced, which this script cannot know until Codex has been called.
+if [ "$ARBITRATE_ONLY" -eq 0 ]; then
+  RUN_MODE=$(council_manifest_get "$MANIFEST" mode)
+  if [ -n "$RUN_MODE" ] || [ -n "${COUNCIL_MODE-}" ] || [ -n "${COUNCIL_MODE_APPLIED-}" ]; then
+    if grep -q '^model\.[A-H]=' "$MANIFEST"; then
+      MOVED=""
+      for L in $LETTERS; do
+        name=$(council_manifest_get "$MANIFEST" "planner\\.$L")
+        case "$name" in
+          claude)     seat=COUNCIL_MODEL_CLAUDE ;;
+          claude_alt) seat=COUNCIL_MODEL_CLAUDE_ALT ;;
+          *) continue ;;
+        esac
+        grep -q "^model\\.$L=" "$MANIFEST" || council_die "council.txt records a model for some planners but not for Plan $L ($name), so whether it would attack on the model it planned with cannot be checked. The manifest has been edited or truncated; rerun the planning."
+        was=$(council_manifest_get "$MANIFEST" "model\\.$L")
+        eval "now=\${$seat-}"
+        [ "$was" = "$now" ] || MOVED="$MOVED Plan $L ($name) planned on '$was' and would attack on '$now' ($seat);"
+      done
+      if [ -n "$MOVED" ]; then
+        if [ "$RUN_MODE" = "${COUNCIL_MODE_APPLIED-}" ]; then
+          # Same mode, so the mode is not what moved the seat. Say what else
+          # can be seen to differ: the ladder the seats were dealt from.
+          if grep -q '^ladder=' "$MANIFEST"; then
+            RUN_LADDER="ladder '$(council_manifest_get "$MANIFEST" ladder)'"
+          else
+            RUN_LADDER=""
+          fi
+          if [ -z "$RUN_LADDER" ]; then
+            # council-plan.sh writes ladder= beside mode=, so a manifest with
+            # mode= and no ladder= has been edited or truncated. There is no
+            # recorded ladder to compare with or to put back.
+            WHY="council.txt records no ladder (it has no ladder= line, although council-plan.sh writes one beside mode=, so the manifest has been edited or truncated), so whether the ladder is what moved the seat cannot be told from here; the ladder in effect now is '${COUNCIL_MODEL_LADDER-}'. Pin the seat by hand for this review to the model council.txt records."
+          elif [ "$RUN_LADDER" = "ladder '${COUNCIL_MODEL_LADDER-}'" ]; then
+            WHY="council.txt records $RUN_LADDER, and that is the ladder in effect now too, so something else in effect now moved the seat, such as a seat pinned by hand in the config or the environment, or the mode file's COUNCIL_STRONGEST_FOR. Pin the seat by hand for this review to the model council.txt records."
+          else
+            WHY="council.txt records $RUN_LADDER; the ladder in effect now is '${COUNCIL_MODEL_LADDER-}'. Put the recorded ladder back for this review if that is what changed, or pin the seat by hand for this review to the model council.txt records."
+          fi
+          council_die "a planner would attack with a different model than the one it planned with:${MOVED%;}. The run was planned under mode '${RUN_MODE}' and this review loads the same mode, so the mode is not what changed. $WHY Each planner is meant to attack with its own model. Nothing has been run."
+        fi
+        council_die "a planner would attack with a different model than the one it planned with:${MOVED%;}. The run was planned under mode '${RUN_MODE}' (council.txt mode=, empty means no mode); this review loads mode '${COUNCIL_MODE_APPLIED-}' (empty, again, means no mode). Each planner is meant to attack with its own model. Review under the mode the run was planned with, or pin the seat by hand for this review to the model council.txt records. Nothing has been run."
+      fi
+    fi
+  fi
+fi
+
 STAGE=$(council_stage "$ROOT")
 trap 'rm -rf "$STAGE"' EXIT
 trap 'exit 130' INT TERM
@@ -120,6 +180,23 @@ for L in $LETTERS; do
 done
 
 # --- Arbitration ----------------------------------------------------------------
+# Record the arbiter's model, written just before the arbiter is called so the
+# line exists only for a review that reached arbitration. A rerun with
+# --arbitrate-only replaces it rather than adding a second line, so the record
+# names the model of the arbitration now in arbitration.md.
+#
+# Both refusals below come after the attacks, which are in RUN by then, so
+# each says how to get the arbitration without paying for them again. grep's
+# exit 1 only means it kept no line; exit 2 means the manifest could not be
+# read (gone, or unreadable), and writing the two arbiter lines alone would
+# replace the run record with them.
+KEEP=$(grep -v -e '^model\.arbiter=' -e '^model\.arbiter\.from=' "$MANIFEST")
+[ "$?" -le 1 ] || council_die "cannot read $MANIFEST to record model.arbiter, so it was not rewritten and the arbiter was not called. The attacks are in $RUN (attack-*.md): once council.txt can be read again, rerun with --arbitrate-only to arbitrate on them without running the attacks again."
+{
+  [ -z "$KEEP" ] || printf '%s\n' "$KEEP"
+  printf 'model.arbiter=%s\n' "$COUNCIL_MODEL_ARBITER"
+  printf 'model.arbiter.from=%s\n' "the setting COUNCIL_MODEL_ARBITER in effect for this review, which the plugin's own arbiter function passes as --model; what was asked for, not proof of what answered"
+} > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST" || { rm -f "$MANIFEST.tmp"; council_die "cannot record model.arbiter in $MANIFEST, so the arbiter was not called. The attacks are in $RUN (attack-*.md): once council.txt can be written, rerun with --arbitrate-only to arbitrate on them without running the attacks again."; }
 [ ! -e "$RUN/arbitration.md" ] || mv "$RUN/arbitration.md" "$RUN/arbitration.$(date +%Y%m%d-%H%M%S).old.md"
 {
   cat "$PLUGIN_ROOT/prompts/arbiter.md"
