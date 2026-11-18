@@ -843,14 +843,107 @@ council_prompt_opens_with_field() {
 # JSON output. This is the call and nothing else: what the CLI prints goes to
 # this function's stdout and stderr untouched, and its exit status is the
 # CLI's. Each probe is a full CLI session and is billed as one. Shared by
-# council-doctor.sh and by the identity gate in council-plan.sh, and only the
-# call is shared: each caller decides what to capture and how to read it. The
-# doctor merges stderr into what it reads and ignores the exit status, as it
-# always has; the gate refuses a non-zero exit and reads only the model IDs
-# that are keys of modelUsage on stdout, because a fallback can be announced
-# on stderr by name and a failed call can name the model it failed on.
+# council-doctor.sh, by the identity gate in council-plan.sh and by the probe
+# in council-detect.sh, and only the call is shared: each caller decides what
+# to capture and how to judge it. The doctor merges stderr into what it reads
+# and ignores the exit status, as it always has; the gate and the probe refuse
+# a non-zero exit and read stdout alone with council_billed_ids below, because
+# a fallback can be announced on stderr by name and a failed call can name the
+# model it failed on.
 council_probe_call() {
   printf 'Reply with the single word ok.' | claude -p --model "$1" --output-format json
+}
+
+# council_billed_ids -- reads, on stdin, the stdout of one call made with
+# --output-format json, and prints the model IDs the claude CLI billed for it,
+# sorted, unique and joined by single spaces: the "claude-..." keys of the
+# modelUsage object. It prints "!" when that stdout cannot be read, and
+# nothing when it names no billed ID.
+#
+# This is the one definition of "answered" in this plugin. The model check in
+# council-plan.sh and the setup's probe in council-detect.sh both read a reply
+# with it, so both take the same billed list from the same reply. Only the
+# reading is shared. Each caller keeps stderr out of what it hands here (a
+# fallback can be announced on stderr by name), judges the exit status itself
+# (a failed call can name the model it failed on), compares the list with the
+# ID it asked for, and writes its own messages.
+# council-doctor.sh does not use it, on purpose: it keeps its own looser
+# reading, and its comment says how.
+#
+# Reading those keys is reading JSON, so the reader follows it: string state
+# (with backslash escapes) and brace and bracket depth, across lines and
+# whatever the spacing. It reads the JSON object stdout opens with, after any
+# whitespace, and stops where that object closes: whatever follows it, a
+# second object or a line of text, is ignored and can add nothing.
+# Inside it, "modelUsage" counts only as a key of that object itself, never of
+# one nested in it, and may appear there only once. Its value must be an
+# object, and each of its own keys that is "claude-..." and holds an object is
+# a billed ID; keys nested deeper, and fields beside modelUsage, are not. Keys
+# are compared as raw text, and a backslash escape can spell the same key
+# another way, so a key holding a backslash at either of those two levels
+# cannot be compared. Output that does not open with an object, whose first
+# object never closes, closes on the wrong bracket or breaks a string across
+# lines, that names modelUsage twice, or that holds such a key, gives "!"; a
+# modelUsage that is missing, not an object, or without such a key gives
+# nothing.
+council_billed_ids() {
+  _cbi=$(LC_ALL=C awk '
+    BEGIN { d = 0; st = ""; ins = 0; esc = 0; started = 0; closed = 0
+            bad = 0; nmu = 0; inmu = 0; key = ""; havestr = 0; colon = 0; n = 0 }
+    {
+      if (NR > 1 && ins) bad = 1
+      line = $0
+      len = length(line)
+      for (i = 1; i <= len; i++) {
+        c = substr(line, i, 1)
+        if (ins) {
+          if (esc) esc = 0
+          else if (c == "\\") esc = 1
+          else if (c == "\"") { ins = 0; havestr = 1; continue }
+          s = s c
+          continue
+        }
+        if (c == " " || c == "\t" || c == "\r") continue
+        if (closed) exit
+        if (!started) {
+          if (c != "{") { bad = 1; exit }
+          started = 1
+        }
+        if (colon) {
+          colon = 0
+          if (d == 1 && key == "modelUsage") {
+            nmu++
+            if (c == "{") inmu = 1
+          } else if (inmu && d == 2 && c == "{" && key ~ /^claude-[A-Za-z0-9._-]*$/) {
+            ids[++n] = key
+          }
+        }
+        if (havestr) {
+          havestr = 0
+          if (c == ":") {
+            key = s; colon = 1
+            if (index(key, "\\") && (d == 1 || (inmu && d == 2))) { bad = 1; exit }
+            continue
+          }
+        }
+        if (c == "\"") { ins = 1; s = ""; continue }
+        if (c == "{" || c == "[") { st = st c; d++; continue }
+        if (c == "}" || c == "]") {
+          if (d == 0) { bad = 1; exit }
+          o = substr(st, d, 1)
+          if ((c == "}" && o != "{") || (c == "]" && o != "[")) { bad = 1; exit }
+          st = substr(st, 1, d - 1)
+          d--
+          if (inmu && d == 1) inmu = 0
+          if (d == 0) closed = 1
+        }
+      }
+    }
+    END {
+      if (bad || !closed || nmu > 1) { print "!"; exit }
+      for (k = 1; k <= n; k++) print ids[k]
+    }' | sort -u | tr '\n' ' ')
+  printf '%s\n' "${_cbi% }"
 }
 
 # Run one function per job in parallel, from the context root, feeding each

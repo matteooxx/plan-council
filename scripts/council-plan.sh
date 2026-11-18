@@ -191,89 +191,21 @@ if [ -n "${COUNCIL_MODE_APPLIED:-}" ]; then
       k=$((k + 1))
       eval "id=\$GATE_ID_$k"
       eval "seats=\$GATE_SEATS_$k"
-      # Only the call is shared with the doctor; the reading is the gate's
-      # own. stdout and stderr are kept apart and the status is taken at once:
+      # Only the call is shared with the doctor, which reads it its own way;
+      # the reading below is shared with the setup's probe, and nothing else
+      # is. stdout and stderr are kept apart and the status is taken at once:
       # a failed call can name the model it failed on, and a fallback can be
       # announced on stderr by name, so neither status nor stderr may be
       # passed over. What counts is what the CLI billed: the "claude-..." keys
       # of modelUsage on stdout. stderr is only quoted, never read for IDs.
       out=$(council_probe_call "$id" 2> "$STAGE/probe-err")
       rc=$?
-      # Reading those keys is reading JSON, so the reader follows it: string
-      # state (with backslash escapes) and brace and bracket depth, across
-      # lines and whatever the spacing. It reads the JSON object stdout opens
-      # with, after any whitespace, and stops where that object closes:
-      # whatever follows it, a second object or a line of text, is ignored and
-      # can add nothing.
-      # Inside it, "modelUsage" counts only as a key of that object itself,
-      # never of one nested in it, and may appear there only once. Its value
-      # must be an object, and each of its own keys that is "claude-..." and
-      # holds an object is a billed ID; keys nested deeper, and fields beside
-      # modelUsage, are not. Keys are compared as raw text, and a backslash
-      # escape can spell the same key another way, so a key holding a
-      # backslash at either of those two levels cannot be compared. Output
-      # that does not open with an object, whose first object never closes,
-      # closes on the wrong bracket or breaks a string across lines, that
-      # names modelUsage twice, or that holds such a key, gives "!" and is
-      # refused as unreadable; a modelUsage that is missing, not an object,
-      # or without such a key gives nothing and is refused as naming no ID.
-      rep=$(printf '%s\n' "$out" | LC_ALL=C awk '
-        BEGIN { d = 0; st = ""; ins = 0; esc = 0; started = 0; closed = 0
-                bad = 0; nmu = 0; inmu = 0; key = ""; havestr = 0; colon = 0; n = 0 }
-        {
-          if (NR > 1 && ins) bad = 1
-          line = $0
-          len = length(line)
-          for (i = 1; i <= len; i++) {
-            c = substr(line, i, 1)
-            if (ins) {
-              if (esc) esc = 0
-              else if (c == "\\") esc = 1
-              else if (c == "\"") { ins = 0; havestr = 1; continue }
-              s = s c
-              continue
-            }
-            if (c == " " || c == "\t" || c == "\r") continue
-            if (closed) exit
-            if (!started) {
-              if (c != "{") { bad = 1; exit }
-              started = 1
-            }
-            if (colon) {
-              colon = 0
-              if (d == 1 && key == "modelUsage") {
-                nmu++
-                if (c == "{") inmu = 1
-              } else if (inmu && d == 2 && c == "{" && key ~ /^claude-[A-Za-z0-9._-]*$/) {
-                ids[++n] = key
-              }
-            }
-            if (havestr) {
-              havestr = 0
-              if (c == ":") {
-                key = s; colon = 1
-                if (index(key, "\\") && (d == 1 || (inmu && d == 2))) { bad = 1; exit }
-                continue
-              }
-            }
-            if (c == "\"") { ins = 1; s = ""; continue }
-            if (c == "{" || c == "[") { st = st c; d++; continue }
-            if (c == "}" || c == "]") {
-              if (d == 0) { bad = 1; exit }
-              o = substr(st, d, 1)
-              if ((c == "}" && o != "{") || (c == "]" && o != "[")) { bad = 1; exit }
-              st = substr(st, 1, d - 1)
-              d--
-              if (inmu && d == 1) inmu = 0
-              if (d == 0) closed = 1
-            }
-          }
-        }
-        END {
-          if (bad || !closed || nmu > 1) { print "!"; exit }
-          for (k = 1; k <= n; k++) print ids[k]
-        }' | sort -u | tr '\n' ' ')
-      rep=${rep% }
+      # The billed list is read with council_billed_ids in lib.sh, the one
+      # reader of a reply, which the setup's probe in council-detect.sh uses
+      # too, so both take the same billed list from the same reply. Its
+      # comment says what it reads. It gives "!" for a stdout it cannot read
+      # and nothing when no billed ID is named; both are refused below.
+      rep=$(printf '%s\n' "$out" | council_billed_ids)
       # The cost line: the sum of every numeric costUSD figure on this call's
       # stdout, written "costUSD": with any spaces after the colon and then a
       # digit, wherever it sits: in modelUsage or beside it, in the object the
