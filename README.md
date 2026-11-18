@@ -703,9 +703,14 @@ agreeing. One run is not a track record.
   with its separators eaten.
 - **Adapters for a third provider** (Gemini CLI, Cursor, Aider). The shape is
   documented; none has been invoked.
-- **The model probe's parsing** still lists every `claude-*` ID in the CLI's
-  JSON output with `grep`. If a future version reports models differently the
-  probe will say it found none; it will not report a false pass.
+- **The model probe's parsing.** The setup's probe and the model check read a
+  reply with the same reader: only the `claude-...` keys of the `modelUsage`
+  object in the JSON on stdout, from a call that exited 0. If a future
+  version of the CLI stops billing under those keys, both will find no ID and
+  refuse, rather than read the change as a pass. `/council-doctor` still
+  lists every quoted `claude-...` string in stdout and stderr with `grep`,
+  whatever the exit status, so a changed format can still leave its `ok`
+  lines standing; see the probe bullet under Limitations.
 - **Codex's model is not pinned** unless you set `COUNCIL_MODEL_CODEX`, and
   Codex takes neither `--effort` nor `--max-budget-usd`, so those settings do
   not reach it. A run records the model **Codex announced** in its own banner,
@@ -790,21 +795,22 @@ so its costs are counted calls, not bills:
   one-word call per candidate model, one for the guard check, and, when Codex
   is logged in, one Codex call that runs at the model and reasoning effort of
   your own Codex config, which can be `xhigh`.
-- **The setup's probe can offer a model the model check then refuses.**
-  `council-detect.sh` lists an ID in `MODELS_AVAILABLE` only when that exact
-  ID is among the `claude-...` IDs it finds, so if a CLI bills under a dated
-  or suffixed key, the probe reports that model as not answering rather than
-  offering it for a ladder the model check would refuse. Its reading is still
-  looser than the check's: it reads stdout and stderr together, ignores the
-  exit status, and takes any quoted `"claude-..."` string as reported, where
-  the check reads only the `modelUsage` keys of a call that exited 0.
-  Measured with stand-in CLIs, a failed call whose error names the ID, a
-  fallback announced on stderr, and the ID named outside `modelUsage` are each
-  listed as available by the probe and then refused by the check, at one paid
-  call per council. `/council-doctor` reads more loosely still, on purpose,
-  so that its output stays what it was: it also accepts a reported ID that
-  only starts with the one asked for, so its `ok` line is not a pass of the
-  model check.
+- **The setup's probe holds for the reply it read, and `/council-doctor` is
+  not the model check.** `council-detect.sh` reads each reply with the model
+  check's own reader, `council_billed_ids` in `scripts/lib.sh`, and judges
+  it as the check does: the call must exit 0, stderr is not read for IDs,
+  and the exact ID asked for must be among the `modelUsage` keys. So a failed
+  call whose error names the ID, a fallback announced on stderr, the ID named
+  outside `modelUsage`, and a dated or suffixed key are each reported as not
+  answering, as the check refuses them. Measured with stand-in CLIs, the two
+  reach the same verdict on every reply shape the test harness has. That
+  holds for the same reply: a model the probe listed can still be refused at
+  a later council if the CLI answers differently by then, which is why the
+  ladder carries the probe's date. `/council-doctor` reads more loosely, on
+  purpose, so that its output stays what it was: it reads stdout and stderr
+  together, ignores the exit status, takes any quoted `"claude-..."` string
+  as reported, and accepts a reported ID that only starts with the one asked
+  for, so its `ok` line is not a pass of the model check.
 - **Under `standard`, the first model on your ladder also drafts the
   assignment table**, because the arbiter's model is the one
   `/council-assign` runs. The mode's assignment effort is the only lever on it.

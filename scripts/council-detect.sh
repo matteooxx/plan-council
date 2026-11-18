@@ -196,32 +196,47 @@ else
   echo "Models that actually answer (asked for -> reported in usage)"
   if [ "$SUM_CLAUDE" = yes ]; then
     SUM_NOT=""
+    # One definition of "answered", the model check's own: each ID is asked
+    # with council_probe_call and its reply read with council_billed_ids, both
+    # in lib.sh, as council-plan.sh's model check does, so an ID listed here
+    # as available is one the check passes on the same reply. As there, stdout
+    # is read alone and the exit status is judged: a failed call can name the
+    # ID it failed on, and a fallback can be announced on stderr by name, so
+    # stderr is only quoted, never read for IDs. And as there, '$m' must equal
+    # one billed ID: one that only starts with '$m' (a dated key, or
+    # claude-x-10 for claude-x-1) is not '$m', and the check would refuse it
+    # at every council.
+    PROBE_ERR=$(mktemp 2>/dev/null || mktemp -t plancouncil) || council_die "mktemp failed"
     for m in $PROBE_MODELS; do
-      json=$(printf 'Reply with the single word ok.' | claude -p --model "$m" --output-format json 2>&1)
-      reported=$(printf '%s' "$json" | grep -o '"claude-[A-Za-z0-9._-]*"' | tr -d '"' | sort -u | tr '\n' ' ')
-      # Exact, as council-plan.sh's model check compares: '$m' must equal one
-      # whole entry. A reported ID that only starts with '$m' (a dated key,
-      # or claude-x-10 for claude-x-1) is not '$m', and the check would
-      # refuse it at every council, so it is reported here as not answering.
-      # The reading is still looser than the check's: stdout and stderr
-      # together, the exit status ignored, any quoted "claude-..." string.
-      case " $reported " in
-        *" $m "*)
-          printf '  available       %-22s -> %s\n' "$m" "$reported"
-          SUM_MODELS="$SUM_MODELS $m"
-          ;;
-        *)
-          # Not answering covers both branches: a mismatch did not answer as
-          # the ID asked for, and without this it would be in neither list.
-          SUM_NOT="$SUM_NOT $m"
-          if [ -z "$reported" ]; then
-            printf '  NOT available   %-22s (%s)\n' "$m" "$(printf '%s' "$json" | tr '\n' ' ' | cut -c1-110)"
-          else
-            printf '  MISMATCH        %-22s -> %s (not the ID asked for: alias or fallback)\n' "$m" "$reported"
-          fi
-          ;;
-      esac
+      out=$(council_probe_call "$m" 2> "$PROBE_ERR")
+      rc=$?
+      reported=$(printf '%s\n' "$out" | council_billed_ids)
+      why=
+      if [ "$rc" -ne 0 ]; then
+        why="the call exited with status $rc"
+      elif [ "$reported" = "!" ]; then
+        why="its JSON output could not be read"
+      elif [ -z "$reported" ]; then
+        why="it billed no model ID"
+      else
+        case " $reported " in
+          *" $m "*)
+            printf '  available       %-22s -> %s\n' "$m" "$reported"
+            SUM_MODELS="$SUM_MODELS $m"
+            continue
+            ;;
+        esac
+      fi
+      # Not answering covers every other branch: a mismatch did not answer as
+      # the ID asked for, and without this it would be in neither list.
+      SUM_NOT="$SUM_NOT $m"
+      if [ -n "$why" ]; then
+        printf '  NOT available   %-22s (%s: %s)\n' "$m" "$why" "$({ printf '%s\n' "$out"; cat "$PROBE_ERR" 2>/dev/null; } | tr '\n' ' ' | cut -c1-110)"
+      else
+        printf '  MISMATCH        %-22s -> %s (not the ID asked for: alias or fallback)\n' "$m" "$reported"
+      fi
     done
+    rm -f "$PROBE_ERR"
     printf '  note            A line can list IDs other than the one asked for. They may be\n'
     printf '                  calls the CLI makes on its own, or a model that answered\n'
     printf '                  instead; this script cannot tell the two apart.\n'
