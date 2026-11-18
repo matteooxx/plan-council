@@ -39,9 +39,24 @@ ROOT=$(council_absdir "$ROOT") || council_die "context root not found: $ROOT"
 PROBE_MODEL="${COUNCIL_PROBE_MODEL:-claude-haiku-5-5}"
 
 # The models offered as planners and arbiter. Override to probe others.
+#
+# What the order means, as of 2026-11-18: only what this repository states.
+# The order is the per-token price, highest first, as given in
+# commands/council-setup.md under the heading "## 4. Which models", where
+# /council-setup also asks the user which model takes which seat, and in
+# config/council.conf:60, which says the same of Fable: priced highest, with
+# nothing here measuring which model plans or judges best. Nothing was
+# measured to produce the order either, and it chooses nothing: it is the
+# order of the probe below and of MODELS_AVAILABLE.
 PROBE_MODELS="${COUNCIL_PROBE_MODELS:-claude-fable-5-2 claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5}"
 
 SUM_MODELS=""
+# Under --no-model-check nothing is probed, so these say so rather than print
+# an empty value that would read as "every model answered".
+SUM_NOT=unknown
+SUM_PROBED_ON=skipped
+SUM_CODEX_MODEL=unknown
+SUM_CODEX_EFFORT=unknown
 SUM_CODEX=unknown
 SUM_CLAUDE=no
 SUM_DENY=unknown
@@ -135,7 +150,10 @@ fi
 if command -v codex >/dev/null 2>&1; then
   printf '  codex           %s\n' "$(codex --version 2>/dev/null | head -n 1)"
   _login=$(codex login status 2>&1 | head -n 1)
+  # "Not logged in" is checked first: it contains "logged in", and the codex
+  # binary carries that string, so the yes branch alone would read it as yes.
   case "$_login" in
+    *"Not logged in"*|*"not logged in"*) SUM_CODEX=no; printf '  codex auth      NOT CONNECTED (%s)\n' "$_login" ;;
     *"Logged in"*|*"logged in"*) SUM_CODEX=yes; printf '  codex auth      %s\n' "$_login" ;;
     *) SUM_CODEX=no; printf '  codex auth      NOT CONNECTED (%s)\n' "$_login" ;;
   esac
@@ -174,17 +192,28 @@ if [ "$PROBE" -eq 0 ]; then
   echo "  skipped         --no-model-check was given, so nothing live was checked."
   echo "                  Unknown is not the same as fine."
 else
+  SUM_PROBED_ON=$(date +%Y-%m-%d)
   echo "Models that actually answer (asked for -> reported in usage)"
   if [ "$SUM_CLAUDE" = yes ]; then
+    SUM_NOT=""
     for m in $PROBE_MODELS; do
       json=$(printf 'Reply with the single word ok.' | claude -p --model "$m" --output-format json 2>&1)
       reported=$(printf '%s' "$json" | grep -o '"claude-[A-Za-z0-9._-]*"' | tr -d '"' | sort -u | tr '\n' ' ')
-      case " $reported" in
-        *" $m"*)
+      # Exact, as council-plan.sh's model check compares: '$m' must equal one
+      # whole entry. A reported ID that only starts with '$m' (a dated key,
+      # or claude-x-10 for claude-x-1) is not '$m', and the check would
+      # refuse it at every council, so it is reported here as not answering.
+      # The reading is still looser than the check's: stdout and stderr
+      # together, the exit status ignored, any quoted "claude-..." string.
+      case " $reported " in
+        *" $m "*)
           printf '  available       %-22s -> %s\n' "$m" "$reported"
           SUM_MODELS="$SUM_MODELS $m"
           ;;
         *)
+          # Not answering covers both branches: a mismatch did not answer as
+          # the ID asked for, and without this it would be in neither list.
+          SUM_NOT="$SUM_NOT $m"
           if [ -z "$reported" ]; then
             printf '  NOT available   %-22s (%s)\n' "$m" "$(printf '%s' "$json" | tr '\n' ' ' | cut -c1-110)"
           else
@@ -193,9 +222,37 @@ else
           ;;
       esac
     done
-    printf '  note            Other IDs in a line are the CLI own background calls, not a fallback.\n'
+    printf '  note            A line can list IDs other than the one asked for. They may be\n'
+    printf '                  calls the CLI makes on its own, or a model that answered\n'
+    printf '                  instead; this script cannot tell the two apart.\n'
   else
     printf '  skipped         claude is not installed.\n'
+  fi
+
+  # One one-word Codex call, only when Codex is logged in: what model and
+  # effort its banner announces. Both are read with council_codex_announced_model
+  # in lib.sh, the parser the run record uses, and never with a second one. For
+  # the effort, a copy of the log has its "reasoning effort:" field renamed to
+  # "model:" and the real "model:" field renamed to another field name, so the
+  # same parser, with all its refusals, reads the effort instead. Announced is
+  # what Codex was asked for, not proof of what served. The prompt's first
+  # line is not shaped like a banner field, which is what keeps Codex's echo
+  # of it out of the banner (see lib.sh).
+  echo "Codex banner"
+  if [ "$SUM_CODEX" = yes ]; then
+    CXDIR=$(mktemp -d 2>/dev/null || mktemp -d -t plancouncil) || council_die "mktemp failed"
+    printf 'Reply with the single word ok.\n' \
+      | ( cd "$CXDIR" && codex exec --sandbox read-only --skip-git-repo-check - ) \
+        > /dev/null 2> "$CXDIR/codex-stderr.log"
+    SUM_CODEX_MODEL=$(council_codex_announced_model "$CXDIR/codex-stderr.log")
+    sed -e 's/^model: /announced model: /' -e 's/^reasoning effort: /model: /' \
+      "$CXDIR/codex-stderr.log" > "$CXDIR/codex-effort.log"
+    SUM_CODEX_EFFORT=$(council_codex_announced_model "$CXDIR/codex-effort.log")
+    rm -rf "$CXDIR"
+    printf '  model           %s (announced: what was asked for, not proof of what served)\n' "$SUM_CODEX_MODEL"
+    printf '  effort          %s\n' "$SUM_CODEX_EFFORT"
+  else
+    printf '  skipped         codex is not installed or not logged in: no call made.\n'
   fi
 
   echo "Guards"
@@ -238,4 +295,8 @@ printf 'SHELL_KIND=%s\n' "$SUM_SHELL"
 printf 'USER_SHELL=ask\n'
 printf 'DENY_RULE_EFFECTIVE=%s\n' "$SUM_DENY"
 printf 'MODELS_AVAILABLE=%s\n' "${SUM_MODELS# }"
+printf 'MODELS_NOT_ANSWERING=%s\n' "${SUM_NOT# }"
+printf 'PROBED_ON=%s\n' "$SUM_PROBED_ON"
+printf 'CODEX_MODEL=%s\n' "$SUM_CODEX_MODEL"
+printf 'CODEX_EFFORT=%s\n' "$SUM_CODEX_EFFORT"
 printf 'CONFIG_IS_PROJECT_OWN=%s\n' "$( [ -f "$ROOT/.claude/plan-council.conf" ] && echo yes || echo no )"
