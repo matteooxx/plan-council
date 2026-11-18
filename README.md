@@ -811,6 +811,18 @@ so its costs are counted calls, not bills:
   together, ignores the exit status, takes any quoted `"claude-..."` string
   as reported, and accepts a reported ID that only starts with the one asked
   for, so its `ok` line is not a pass of the model check.
+- **The arbiter's model is checked at planning, not again at the review.**
+  Under a mode, the model check asks the arbiter's ID along with the
+  planners', before any planner is paid for. A review then records
+  `model.arbiter=` from the setting in effect for that review and does not
+  re-check it against what planning verified. So a change to the ladder, to
+  the mode or to `COUNCIL_MODEL_ARBITER` between the two phases can seat an
+  unverified model as arbiter. The run stays traceable, because
+  `model.arbiter.from=` says the value came from the setting in effect for
+  the review, but nothing refuses it. Keep the ladder, the mode and that
+  setting as they were for the planning, or read `model.arbiter=` against
+  the `modelcheck.<n>` lines in `council.txt` before you trust the
+  arbitration. A run with `--no-model-check` never checked it at all.
 - **Under `standard`, the first model on your ladder also drafts the
   assignment table**, because the arbiter's model is the one
   `/council-assign` runs. The mode's assignment effort is the only lever on it.
