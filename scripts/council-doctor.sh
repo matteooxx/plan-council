@@ -137,6 +137,49 @@ fi
 type arbiter >/dev/null 2>&1 && ok "arbiter function defined" || bad "no arbiter function"
 [ -n "$COUNCIL_RISK_FLOOR" ] && ok "risk floor: $COUNCIL_RISK_FLOOR" || bad "COUNCIL_RISK_FLOOR is empty"
 ok "effort: plan $COUNCIL_PLANNER_EFFORT, attack $COUNCIL_ATTACK_EFFORT, arbitrate $COUNCIL_ARBITER_EFFORT, assign $COUNCIL_ASSIGN_EFFORT"
+# The seats, as the load left them. Under a mode that dealt them this is
+# COUNCIL_DEALT, which council_refresh_dealt writes once the config has
+# returned: the seats of planners claude and claude_alt as the deal saw them,
+# and the arbiter, each with the value now in effect, tagged (kept) or
+# (overridden) where the ladder did not supply it. The deal saw the planner
+# list as it stood at the line that sources the plugin's config, or "claude
+# codex" if it was empty there, the default that config fills in before it
+# deals: a COUNCIL_PLANNERS line below it can put a hand-pinned seat in play
+# that is not listed here, or leave a listed seat out of play. With nothing
+# dealt it is the seats of planners claude and claude_alt in COUNCIL_PLANNERS
+# as it stands now, and the arbiter, read from the settings. Codex, and any
+# other planner, is never listed. For a listed seat in play, the value is what
+# a run loaded the same way records as model.<letter>=, and what a review
+# loaded the same way records as model.arbiter=; both record it unquoted,
+# where this line puts a value holding whitespace in single quotes. The date
+# is COUNCIL_MODEL_LADDER_DATE as configured, and nothing checks it. The
+# model probe below asks each seat's model, a dealt rung included, unless
+# --no-model-check is given or claude is not on PATH. It asks no rung merely
+# for being on the ladder, but it does ask any model that the config in use
+# names after a literal --model, or that an agent pins, whether or not a seat
+# took it.
+if [ -n "${COUNCIL_DEALT:-}" ]; then
+  if [ -n "${COUNCIL_MODEL_LADDER_DATE:-}" ]; then
+    ok "seats dealt by mode ${COUNCIL_MODE_APPLIED:-?}:$COUNCIL_DEALT; ladder dated $COUNCIL_MODEL_LADDER_DATE"
+  else
+    note "seats dealt by mode ${COUNCIL_MODE_APPLIED:-?}:$COUNCIL_DEALT; the ladder has no date set, so its age is unknown"
+  fi
+else
+  SEATS=""
+  for p in $COUNCIL_PLANNERS; do
+    case "$p" in
+      claude)     council_record_value "$COUNCIL_MODEL_CLAUDE"; SEATS="$SEATS COUNCIL_MODEL_CLAUDE=$_rv" ;;
+      claude_alt) council_record_value "$COUNCIL_MODEL_CLAUDE_ALT"; SEATS="$SEATS COUNCIL_MODEL_CLAUDE_ALT=$_rv" ;;
+    esac
+  done
+  council_record_value "$COUNCIL_MODEL_ARBITER"
+  SEATS="$SEATS COUNCIL_MODEL_ARBITER=$_rv"
+  if [ -n "${COUNCIL_MODEL_LADDER:-}" ]; then
+    note "seats, none dealt:$SEATS; a ladder is set, but no mode dealt it, so it changed no seat"
+  else
+    ok "seats, none dealt:$SEATS; no ladder"
+  fi
+fi
 if [ -n "$COUNCIL_BUDGET_USD" ]; then
   ok "budget cap: \$$COUNCIL_BUDGET_USD per child run"
 else
@@ -210,8 +253,14 @@ if [ "$PROBE" -eq 1 ] && command -v claude >/dev/null 2>&1; then
       tr -d '\r' < "$f" | sed -n 's/^model:[[:space:]]*//p' | head -n 1
     done
   } | grep -v '^$' | grep -v '^\$' | sort -u )
+  # Only the call is council_probe_call, shared with council-plan.sh's identity
+  # gate. Everything else here is this command's own and is not shared: it
+  # reads stdout and stderr together and ignores the exit status, takes any
+  # quoted "claude-..." string as reported, and accepts a reported ID that only
+  # starts with the one asked for (a dated suffix, but also claude-x-10 for
+  # claude-x-1). The gate does none of these.
   for m in $MODELS; do
-    json=$(printf 'Reply with the single word ok.' | claude -p --model "$m" --output-format json 2>&1)
+    json=$(council_probe_call "$m" 2>&1)
     reported=$(printf '%s' "$json" | grep -o '"claude-[A-Za-z0-9._-]*"' | tr -d '"' | sort -u | tr '\n' ' ')
     case " $reported" in
       *" $m"*) ok "$m -> $reported" ;;
@@ -223,7 +272,9 @@ if [ "$PROBE" -eq 1 ] && command -v claude >/dev/null 2>&1; then
         fi ;;
     esac
   done
-  note "Other models in the list (often a small one) are the CLI's own background calls, not a fallback."
+  note "A line can list IDs other than the one asked for. They may be calls the CLI"
+  note "makes on its own, or a model that answered instead, and this check cannot"
+  note "tell the two apart: an ok line does not show that the ID asked for answered."
   note "To check by hand: printf 'ok' | claude -p --model <id> --output-format json"
 fi
 

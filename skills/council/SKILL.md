@@ -28,7 +28,19 @@ produced advice that simply failed:
 - **The models.** Which Claude models an account has, and whether Codex is
   connected, differ per user. The shipped config names Opus because that is
   the broadest entitlement, not because it is the best model available. An
-  account may have Claude Fable, which is more capable and costs more.
+  account may have Claude Fable, which is priced highest per token. Nothing in
+  this plugin has measured which model plans or judges better, so do not tell
+  the user that one does.
+- **Modes and the ladder.** A mode (`COUNCIL_MODE`: `standard` or `thorough`)
+  sets the four efforts and which seat takes the first model of the user's own
+  ladder (`COUNCIL_MODEL_LADDER`, dated by `COUNCIL_MODEL_LADDER_DATE`). The
+  ladder is the user's ranking, not a benchmark, and it is as old as its date.
+  The scripts deal it by position and compare nothing; Codex takes a seat but
+  never a rung. Under a mode each council first asks every Claude model ID in
+  play for one word, at most three paid calls, unless `--no-model-check` is
+  given. Show the seats the way `/council-setup` does, by running the doctor,
+  never by working the deal out yourself. The README's Modes section has the
+  seat table.
 
 `/council-setup` asks all of it, offers `scripts/council-detect.sh` for
 whatever the user does not know, and writes the answers to

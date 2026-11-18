@@ -1,5 +1,5 @@
 ---
-description: First-run setup. Establishes the OS and shell, asks which models and how deep each phase should think, checks what this machine actually has when the user does not know, writes the project config, and only then asks what to plan.
+description: First-run setup. Establishes the OS and shell, asks how the models should be chosen -- a mode for the situation, with a ranking the user confirms, or by hand, with how deep each phase should think -- checks what this machine actually has when the user does not know, writes the project config, and only then asks what to plan.
 argument-hint: "[--root <context-dir>]"
 ---
 
@@ -19,7 +19,8 @@ be repeated:
   run tools in is not necessarily the shell *they* type into.
 - **Do not pick a model.** The shipped config names Opus because that is the
   broadest entitlement, not because it is the best model available here. An
-  account may have Claude Fable, which is more capable and costs more.
+  account may have more models than the default names, Claude Fable among
+  them, and they cost differently.
 
 Ask in the order below. Keep each round short, and never ask about something a
 check could settle without first offering the check.
@@ -74,8 +75,11 @@ connected, or should it be checked?
   invocation for each shell, the required tools, the CLIs, Codex's login state,
   which models actually answer, the agent roster, and whether the rule that
   keeps the arbiter blind is honoured on this machine. The model probe makes
-  one one-word call per candidate model plus one for the guard check: say so
-  first, since it costs a little.
+  one one-word call per candidate model, one for the guard check, and, if
+  Codex is logged in, one Codex call asking for one word, made with the model
+  and reasoning effort in the user's own Codex config (it can be `xhigh`), to
+  read what its banner announces: say so first, since each costs a little and
+  the Codex one costs more the higher its effort is set.
 - **They know** — take their answers, and still run it with
   `--no-model-check` so the OS, tools and roster are not guessed.
 
@@ -92,25 +96,138 @@ terms, including anything that failed.
 
 Explain the one rule that matters before asking: **disagreement is the
 product.** Two planners on the same model produce two plans that agree, at
-twice the price. Then ask:
+twice the price.
+
+State the cost difference honestly. Per million tokens: Claude Fable 5.2 is
+$8 in / $40 out; Claude Opus 5.5 is $4 / $20; Claude Sonnet 5.5 is $2 / $10;
+Claude Haiku 5.5 is $0.10 / $0.50. Fable 5.2 costs about twice Opus 5.5 per
+token. These are prices, not a measurement of which model plans or judges
+better, and nothing in the plugin has measured that. If the user is on a
+subscription rather than API billing, say these figures are the scale, not a
+bill.
+
+Then ask how the models should be chosen:
+
+- **A mode.** One question about the situation sets how deep each phase thinks
+  and which seat takes the first model on a list the user ranks. The modes are
+  the files in `config/modes/` under the plugin directory, the directory above
+  the scripts found in section 2. Read each file's header and relay its
+  `# Sets:`, `# Promises:` and `# Does not protect against:` blocks as written,
+  naming the mode by the situation on its first line.
+- **By hand.** No mode and no list: the user names the model for each seat.
+
+**On the mode path, say this plainly before anything is ranked: the order the
+user confirms is their own ranking, not a benchmark.** The probe measured only
+which model IDs answer; nothing measured which one plans or judges better. A
+mode deals the seats by position on that list and compares nothing else, and
+the list is only as current as the date written with it.
+
+**The mode path, in this order.**
+
+0. **Ask which situation they are in**, unless the user already chose one
+   when the modes were offered above. Otherwise relay each mode file's header
+   in the same way and ask which situation fits. `<mode>` is the chosen
+   file's name without `.conf`.
+1. **Show what the probe found, in its order.** If the probe was skipped
+   (`PROBED_ON=skipped`), there is nothing to rank: offer to run it now, as
+   described in section 3, or take the by-hand path. Otherwise list
+   `MODELS_AVAILABLE` from the summary of section 3 exactly in the order
+   printed, then every model in `MODELS_NOT_ANSWERING` with what the probe
+   printed for it (`NOT available` or `MISMATCH`). The order is the probe's
+   own list, `PROBE_MODELS` in `council-detect.sh`, which by default is the
+   per-token price above, highest first; say so, and do not present it as a
+   judgement. Ask the user to confirm the order, reorder it, or drop models.
+   The result, first rung first, is the ladder. Write it as the IDs separated
+   by single spaces. Put on it only models that answered.
+2. **Codex, if `CODEX=yes`.** State the model its banner announced,
+   `CODEX_MODEL` (what Codex was asked for, not proof of what served; it may
+   be `unknown`), and its announced effort, `CODEX_EFFORT`, which a mode's
+   depth does not change. Say that Codex **cannot be ranked**: it takes a
+   planner seat but never a rung, so it is not on the ladder and the ladder
+   says nothing about it. Ask whether to seat it, as in
+   `COUNCIL_PLANNERS="claude codex"`, or to use a second Claude model, as in
+   `COUNCIL_PLANNERS="claude claude_alt"`. If it is seated and `CODEX_MODEL`
+   is not `unknown`, offer to pin `COUNCIL_MODEL_CODEX` to that model: with
+   the pin the plugin passes it to Codex as `-m`, without it Codex runs
+   whatever its own config names on the day. The pin is the user's choice,
+   not a requirement. Without Codex, the planners are `claude claude_alt`.
+   Under a mode no other planner name can be seated.
+3. **Show the deal by running the doctor, never by working it out.** Run this
+   yourself, with `<plugin>` the directory above the scripts found in
+   section 2 and `<PROBED_ON>` the date from the same summary:
+
+   ```sh
+   COUNCIL_CONFIG="<plugin>/config/council.conf" \
+   COUNCIL_MODE="<mode>" \
+   COUNCIL_MODEL_LADDER="<ladder>" \
+   COUNCIL_MODEL_LADDER_DATE="<PROBED_ON>" \
+   COUNCIL_PLANNERS="<planners>" \
+   sh "<plugin>/scripts/council-doctor.sh" --root "<root>" --no-model-check
+   ```
+
+   `COUNCIL_CONFIG` must point at the plugin's own config. Without it the
+   doctor loads `<root>/.claude/plan-council.conf` when that exists, and the
+   seat lines of an older project config fill seats before the deal, which
+   then shows them as `(kept)`: the deal shown would not be the deal the new
+   config makes. An exported value survives the config, so nothing has to be
+   written first.
+
+   Show the user the seats as the output prints them: the load's own line,
+   `plan-council: mode <mode> seats: ...`, and the doctor's line under
+   `Config`, `seats dealt by mode <mode>: ...; ladder dated <PROBED_ON>`.
+   Because `COUNCIL_CONFIG` is set, the same section says `the config is one
+   you chose` and names the plugin's config as loaded: that describes this
+   preview, not the user's project. Other `FAIL` lines are about this
+   machine, not the deal; report them, and fix them in section 7.
+4. **On a refusal, relay the message.** A refusal is a line starting
+   `plan-council: error:`, with no seats line after it. Quote it as printed,
+   then offer three exits:
+   - **Pin that seat by hand.** A seat that already holds a model keeps it
+     and takes no rung. Offer only a model that answered. Before offering any
+     pin, run the command in step 3 with the pin added (for example
+     `COUNCIL_MODEL_CLAUDE_ALT="<id>"`) and offer it only if the seats line
+     comes back. Do not decide this by reading the ladder: a pinned seat does
+     not take its model out of the ladder, so the other seats still take it
+     from the top, and a pin that looks free can put both Claude planners on
+     one model, which the plugin refuses.
+   - **Go by hand entirely**: the by-hand path below, with no mode.
+   - **Stop**, writing nothing.
+5. **What to write.** In section 7's file, above the line that sources the
+   plugin's config, write the mode, the planners, the ladder and its date:
+
+   ```sh
+   COUNCIL_MODE="${COUNCIL_MODE-<mode>}"
+   COUNCIL_PLANNERS="${COUNCIL_PLANNERS:-<planners>}"
+   COUNCIL_MODEL_LADDER="${COUNCIL_MODEL_LADDER:-<ladder>}"
+   COUNCIL_MODEL_LADDER_DATE="${COUNCIL_MODEL_LADDER_DATE:-<PROBED_ON>}"
+   ```
+
+   `COUNCIL_MODE` has no colon because its empty value means "no mode". Write
+   **no seat line** except one for each seat the user pinned, including
+   `COUNCIL_MODEL_CODEX` if they took the pin offered in step 2, in the form
+   section 7 gives for it. A Claude seat line written anyway
+   (`COUNCIL_MODEL_CLAUDE`, `COUNCIL_MODEL_CLAUDE_ALT` or
+   `COUNCIL_MODEL_ARBITER`) fills its seat before the deal, which then skips
+   it; the deal never touches `COUNCIL_MODEL_CODEX`. Skip section 5, "How
+   deep each phase should think", entirely, and leave out section 7's four
+   effort lines: the mode sets the efforts, and an effort line in the project
+   config would override it. The cap in section 6 still applies.
+
+**The by-hand path.** No mode and no ladder. Then ask:
 
 - **Planner A and planner B.** Offer only what the probe found available. If
-  Codex is connected it is the strongest second planner, because it is a
-  different vendor and not merely a different model. If it is not, use two
-  different Claude models (`COUNCIL_PLANNERS="claude claude_alt"`).
+  Codex is connected, it can be the second planner: a different vendor, not
+  merely a different model. If it is not, use two different Claude models
+  (`COUNCIL_PLANNERS="claude claude_alt"`).
 - **The arbiter.** Prefer a model that is neither planner, and say why: by
   default the arbiter is the same model as a planner, and although it is never
   told which plan is whose, a model that may be judging its own work is a
   weaker check than one that cannot be.
 
-State the cost difference honestly. Per million tokens: Claude Fable 5.2 is
-$8 in / $40 out; Claude Opus 5.5 is $4 / $20; Claude Sonnet 5.5 is $2 / $10;
-Claude Haiku 5.5 is $0.10 / $0.50. Fable 5.2 is the most capable and costs
-about twice Opus 5.5. If the probe found it, offer it for planning and say
-what it adds and what it costs. If the user is on a subscription rather than
-API billing, say these figures are the scale, not a bill.
-
 ## 5. How deep each phase should think
+
+On the mode path, skip this section. The mode has set the four efforts, and
+the doctor's `effort:` line in step 3 of section 4 shows them.
 
 `--effort` sets how long a model reasons before answering, so it moves both
 the bill and the wall clock. It is the main cost lever inside one model. Ask
@@ -158,9 +275,10 @@ it sets what the user chose and then sources the plugin's config, inheriting
 every planner function. Copying the whole file is how a plain assignment
 spreads, and a plain assignment silently overrides an exported value.
 
-Every line uses the `${VAR:-...}` form so an exported value still wins for a
-single run. The scripts now refuse to start when a config overrides an
-exported value, so a plain assignment here would break those runs.
+Every line uses the `${VAR:-...}` form, except the colon-less lines noted
+below, so an exported value still wins for a single run. The scripts now
+refuse to start when a config overrides an exported value, so a plain
+assignment here would break those runs.
 
 ```sh
 # plan-council, written by /council-setup on <date>.
@@ -180,10 +298,17 @@ COUNCIL_RISK_FLOOR="${COUNCIL_RISK_FLOOR:-implementer}"
 . "$COUNCIL_PLUGIN_ROOT/config/council.conf"
 ```
 
-**Note the three lines without the colon.** `COUNCIL_BUDGET_USD`,
-`COUNCIL_MODEL_CODEX` and `COUNCIL_AGENT_DIRS` are the settings whose **empty
-value means something** — no cap, Codex's own default model, no extra agent
-directories. With `${VAR:-default}` an exported empty value counts as unset and
+**On the mode path** the file instead holds the four lines from step 5 of
+section 4, no effort lines, and a seat line only for each seat the user
+pinned, `COUNCIL_MODEL_CODEX` included.
+The `COUNCIL_BUDGET_USD` and `COUNCIL_RISK_FLOOR` lines and the `.` line that
+sources the plugin's config stay as above.
+
+**Note the lines without the colon.** `COUNCIL_BUDGET_USD`,
+`COUNCIL_MODEL_CODEX`, `COUNCIL_AGENT_DIRS` and, on the mode path,
+`COUNCIL_MODE` are the settings whose **empty value means something** — no
+cap, Codex's own default model, no extra agent directories, no mode. With
+`${VAR:-default}` an exported empty value counts as unset and
 the default comes back, so a user who set a cap could never say "no cap for
 this run": the run would instead refuse to start, reporting that the config
 overrode the environment. Written with `${VAR-default}`, this works:
@@ -218,7 +343,7 @@ Then:
   not what it can reach: a child agent can read an absolute path outside the
   root, so the root is not a boundary.
 - Hand off to `/council-plan <brief> --root <root>`, giving the command in the
-  form that works in the shell they named in step 1.
+  form that works in the shell they named in section 1.
 
 If the change is small, local, cheap to undo, or has only one reasonable
 approach, say so and recommend against a council. Two plans that agree are

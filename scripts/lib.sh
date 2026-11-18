@@ -469,9 +469,8 @@ council_recheck_seats() {
 # a pasted COUNCIL_MODEL_CLAUDE_ALT="${COUNCIL_MODEL_CLAUDE_ALT:-claude-sonnet-5-5}",
 # or a wholesale copy of an older council.conf -- is indistinguishable, after
 # evaluation, from a deliberate hand pin on that model, and it loads. That is
-# the price of letting a deliberate late pin work (harness case c4). There is
-# no mode documentation yet in README.md, commands/, skills/ or prompts/:
-# when that step comes, this limit belongs in the user-facing docs.
+# the price of letting a deliberate late pin work. The README states this
+# limit under Limitations.
 council_check_fallback_seats() {
   for _seat in $_claude_seats COUNCIL_MODEL_ARBITER; do
     case " ${_council_fallback_seats-} " in
@@ -838,6 +837,20 @@ council_prompt_opens_with_field() {
   [ "$(awk -v field="$COUNCIL_BANNER_FIELD" '
     { sub(/\r$/, ""); if ($0 ~ field) print "field"; exit }
   ' "$1" 2>/dev/null)" = field ]
+}
+
+# council_probe_call ID -- asks the claude CLI, once, for one word from ID with
+# JSON output. This is the call and nothing else: what the CLI prints goes to
+# this function's stdout and stderr untouched, and its exit status is the
+# CLI's. Each probe is a full CLI session and is billed as one. Shared by
+# council-doctor.sh and by the identity gate in council-plan.sh, and only the
+# call is shared: each caller decides what to capture and how to read it. The
+# doctor merges stderr into what it reads and ignores the exit status, as it
+# always has; the gate refuses a non-zero exit and reads only the model IDs
+# that are keys of modelUsage on stdout, because a fallback can be announced
+# on stderr by name and a failed call can name the model it failed on.
+council_probe_call() {
+  printf 'Reply with the single word ok.' | claude -p --model "$1" --output-format json
 }
 
 # Run one function per job in parallel, from the context root, feeding each

@@ -73,7 +73,8 @@ or how deep you want each phase to think — and the shipped config names Opus
 because that is the broadest entitlement, not because it is the best model
 available to you. `/council-setup` asks, checks whatever you do not know, and
 writes your answers to `<your-project>/.claude/plan-council.conf`. It asks what
-you want to plan **last**.
+you want to plan **last**. It can also set a **mode**, which deals the models
+you rank yourself to the seats: see [Modes](#modes).
 
 If you would rather just see what this machine has:
 
@@ -162,8 +163,8 @@ plan-council/
   skills/council/                  the planning method (phases 1-4)
   skills/execution-discipline/     the execution rules (phase 5)
   agents/scout.md                  read-only, cheapest model, no shell
-  agents/worker.md                 mechanical edits, mid model
-  agents/implementer.md            the risk floor, strongest model
+  agents/worker.md                 mechanical edits, mid-priced model
+  agents/implementer.md            the risk floor, pinned to Opus 5.5
   agents/reviewer.md               no editor; reviews, never writes
   commands/council-setup.md        /council-setup   (the first-run interview)
   commands/council-plan.md         /council-plan
@@ -174,6 +175,7 @@ plan-council/
   scripts/*.sh                     what the commands run
   prompts/*.md                     the planner, attacker, arbiter and assigner prompts
   config/council.conf              models, effort per phase, budget, planners, risk floor
+  config/modes/*.conf              the preset modes: see Modes
   hooks/register.ts                the safety hook
   hooks/register.test.ts           its tests: claude plugin test ./plan-council
 ```
@@ -228,7 +230,8 @@ published only when both have finished:
   prompt.md     the one prompt every planner received
   plan-A.md     claude's plan
   plan-B.md     codex's plan
-  council.txt   root, brief, config, and which planner is which letter
+  council.txt   root, brief, config, which planner is which letter, and the
+                model each was run on as far as the plugin can know it
   logs/
 ```
 
@@ -368,14 +371,18 @@ for a single run by exporting an empty value:
 COUNCIL_BUDGET_USD= council-plan.sh brief.md --root .
 ```
 
-That works because three settings are written `"${VAR-default}"`, without the
-colon: `COUNCIL_BUDGET_USD`, `COUNCIL_MODEL_CODEX` and `COUNCIL_AGENT_DIRS`
-are the ones whose **empty value means something** — no cap, Codex's own
-default model, no extra agent directories. With `"${VAR:-default}"` an
-exported empty value counts as unset and the default returns, so "no cap for
-this run" could not be expressed at all: measured 2026-11-14, the run refused
-to start and reported that the config had overridden the environment. Every
-other setting keeps the colon.
+That works because four settings are written `"${VAR-default}"`, without the
+colon: `COUNCIL_BUDGET_USD`, `COUNCIL_MODEL_CODEX`, `COUNCIL_AGENT_DIRS` and
+`COUNCIL_MODE` are the ones whose **empty value means something** — no cap,
+Codex's own default model, no extra agent directories, no mode. With
+`"${VAR:-default}"` an exported empty value counts as unset and the default
+returns, so "no cap for this run" could not be expressed at all: measured
+2026-11-14, the run refused to start and reported that the config had
+overridden the environment. The same holds for a mode: with
+`COUNCIL_MODE="${COUNCIL_MODE-standard}"` in a project config,
+`COUNCIL_MODE= council-plan.sh brief.md` runs once with no mode, and with the
+colon that run refuses to start (measured 2026-11-18). Every other setting
+keeps the colon.
 
 Codex takes neither flag. Its depth comes from its own model and config, so
 pin `COUNCIL_MODEL_CODEX` if you want it fixed.
@@ -446,20 +453,118 @@ them without touching a function: `COUNCIL_MODEL_CLAUDE`,
 `COUNCIL_MODEL_CODEX`. They hold exact IDs rather than aliases, because an
 alias moves under you and knowing which model answered is the point of the
 method. `--model` does accept `fable`, `opus` and `sonnet` if you prefer the
-latest of a line.
+latest of a line, but under a mode the model check described in
+[Modes](#modes) compares exact IDs, so an alias passes only if the CLI bills
+under that literal string; use exact IDs there.
 
 The shipped defaults are Opus 5.5 for a planner and the arbiter and Sonnet 5.5
 for the second Claude planner. **That is an entitlement guess, not a
-recommendation.** If your account has Claude Fable 5.2 it is the most capable
-model available and roughly twice the price of Opus 5.5; `planner_fable` ships
-ready to use. `council-detect.sh` probes each candidate and reports which ones
-actually answer, so you need not guess at all.
+recommendation.** If your account has Claude Fable 5.2, it is priced highest,
+roughly twice Opus 5.5 per token, and `planner_fable` ships ready to use.
+Which model plans or judges better is something nothing in this plugin has
+measured, so it does not say. `council-detect.sh` probes each candidate and
+reports which ones actually answer, so you need not guess which you have.
 
 **Executor models** are pinned in each agent's frontmatter (`model:`), using
 exact model IDs. To change them, edit your copy of the plugin, or copy an
 agent into `~/.claude/agents/` under a new name and add that directory to
 `COUNCIL_AGENT_DIRS` so `/council-assign` sees it. The risk floor is
 `COUNCIL_RISK_FLOOR` (default `implementer`).
+
+## Modes
+
+A mode answers the technical questions from one question about your situation.
+Two ship, in `config/modes/`, and each file's header says what the mode sets,
+what it promises and what it does not protect against:
+
+| Mode | The situation | Effort: plan, attack, arbitrate, assign | The first model on your ladder goes to |
+|---|---|---|---|
+| `standard` | a decision that is not cheap to undo | `high`, `high`, `high`, `medium` | the arbiter |
+| `thorough` | a project I have not understood well yet | `xhigh`, `high`, `xhigh`, `medium` | the first Claude planner |
+
+`/council-setup` asks which situation you are in and writes the choice. For a
+single run, `COUNCIL_MODE=thorough council-plan.sh brief.md --root .` switches
+the mode, and `COUNCIL_MODE= council-plan.sh brief.md --root .` runs with none.
+A mode file may set the four efforts and `COUNCIL_STRONGEST_FOR` (`arbitration`
+or `planning`) and nothing else: never a model ID, never the planner list,
+never a dollar figure. It is one more link in the chain that already exists,
+so the order stays environment, project config, mode, plugin defaults: a value
+you set yourself still wins over the mode's.
+
+**The ladder is your own order, not a measurement.** `COUNCIL_MODEL_LADDER`
+is a list of exact model IDs separated by single spaces, first rung first.
+`/council-setup` builds it from the models that answered its probe, in the
+order the probe lists them (per-token price, highest first), and asks you to
+confirm, reorder or drop; `COUNCIL_MODEL_LADDER_DATE` records the day of the
+probe. Your ranking is not a benchmark, and the ladder is as old as its date.
+Nothing in the plugin compares models: the deal counts along your line, and
+position on it is all that "strongest" means here.
+
+**The deal.** On every load the mode's seat order takes models from the top of
+the ladder without replacement, so no model is dealt to two seats, and the
+second Claude planner always picks last. The seats are the Claude planners
+`claude` and `claude_alt`, in `COUNCIL_PLANNERS` order, and the arbiter. With
+the ladder `m1 m2 m3`:
+
+| Mode | `COUNCIL_PLANNERS` | `COUNCIL_MODEL_CLAUDE` | `COUNCIL_MODEL_CLAUDE_ALT` | `COUNCIL_MODEL_ARBITER` |
+|---|---|---|---|---|
+| `standard` | `claude codex` | `m2` | not in play | `m1` |
+| `standard` | `claude claude_alt` | `m2` | `m3` | `m1` |
+| `thorough` | `claude codex` | `m1` | not in play | `m2` |
+| `thorough` | `claude claude_alt` | `m1` | `m3` | `m2` |
+
+- **Codex takes a seat but never a rung.** Its model is its own config's
+  business and the ladder cannot rank it. Where it stands in
+  `COUNCIL_PLANNERS` changes nothing above: `codex claude` deals as
+  `claude codex` does.
+- **A seat that already holds a value keeps it and takes no rung**: one set in
+  the environment, or pinned in your project config above the line that
+  sources the plugin's. That is the only way to accept a ladder shorter than
+  the seats in play.
+- **The load refuses**, naming what it found: a ladder too short for the seats
+  in play; a ladder entry listed twice, or holding anything but letters,
+  digits, `.`, `_` and `-`; two Claude planners on one model ID, hand pins
+  included; and any planner but `claude`, `claude_alt` and `codex`,
+  because a function such as `planner_fable` pins its own ID and could
+  quietly take a model the ladder already dealt.
+
+Every load under a mode prints what it did, as
+`plan-council: mode standard seats: ...` followed by the ladder's date, plus
+a line for any seat not dealt from the ladder. `/council-doctor` shows the
+same seats under `Config`. To see the deal a ladder would make before
+writing anything, run the doctor with the settings exported, as section 4 of
+`/council-setup` does, rather than working it out by hand.
+
+**The model check.** Under a mode, before any planner is paid for,
+`council-plan.sh` asks each distinct Claude model ID in play for one word with
+JSON output, at most three calls and fewer when seats share an ID, and stops
+unless the call exits 0 and the CLI billed exactly that ID. It is a gate,
+never a selection: it chooses, reorders and substitutes nothing. Because the
+comparison is exact, a seat holding an alias such as `opus` passes only if
+the CLI bills under that literal string; an alias it resolves to a full ID is
+refused as a possible fallback, so use exact IDs under a mode.
+`--no-model-check` skips the check, and `council.txt` records
+`modelcheck=passed` or `modelcheck=skipped`. A pass shows what answered when
+planning started, not what served the planning calls, which run without JSON
+output and leave nothing to read.
+
+**What a run records.** Besides the root, the brief and the config,
+`council.txt` holds `mode=` and `ladder=`, and for each letter
+`planner.<letter>=` and `model.<letter>=`, with a `model.<letter>.from=` line
+saying where that value came from. For a Claude planner it is the setting in
+effect, which the shipped planner function passes as `--model`: what was asked
+for, not proof of what answered. For Codex it is the model **announced** in
+Codex's own banner, or `unknown`; the record calls it announced, what Codex
+was asked for, and never claims it is what served. `/council-review` adds
+`model.arbiter=` and, when a mode is involved, refuses before any model is
+called if a Claude planner would attack on a different model from the one it
+planned with.
+
+**What the setup's probe reports.** The summary `council-detect.sh` ends with
+holds `MODELS_AVAILABLE` and `MODELS_NOT_ANSWERING` (every probed ID that did
+not answer as itself, a `MISMATCH` included), `PROBED_ON`, and, when Codex is
+logged in and the probe runs, `CODEX_MODEL` and `CODEX_EFFORT` as its banner
+announced them, or `unknown`.
 
 ## The safety hook
 
@@ -493,7 +598,7 @@ anyone working:
 | The judge edits what it judges | The arbiter is started with no edit or write tool; its stdout is the report |
 | A backquote in a shell string opens a command substitution | The scripts contain none; `/council-doctor` runs `bash -n` on every script |
 | A long prompt passed as an argument is truncated | Prompts always go on stdin |
-| A pinned model silently falls back to another | `/council-doctor` asks each model and prints the IDs the CLI reports |
+| A pinned model silently falls back to another | `/council-doctor` asks each model and prints the IDs the CLI reports; under a mode, every run asks each seat's model before any planner is paid for |
 | A dispatch runs on whatever the default model is | The hook refuses it |
 
 Two traps cannot be designed out by a plugin, so here they are, stated plainly:
@@ -603,7 +708,11 @@ agreeing. One run is not a track record.
   probe will say it found none; it will not report a false pass.
 - **Codex's model is not pinned** unless you set `COUNCIL_MODEL_CODEX`, and
   Codex takes neither `--effort` nor `--max-budget-usd`, so those settings do
-  not reach it.
+  not reach it. A run records the model **Codex announced** in its own banner,
+  or `unknown` when the banner cannot be read. The record calls it announced
+  and never claims it is what served: the banner repeats what Codex was asked
+  for, and measured 2026-11-15 it echoes a `-m` value verbatim even for an
+  ID that does not exist.
 
 **Real gaps that remain, now stated plainly:**
 
@@ -662,6 +771,74 @@ agreeing. One run is not a track record.
 - **Planner names and paths.** Planner names may use only letters, digits and
   `_`. `COUNCIL_AGENT_DIRS` is space-separated, so its paths cannot contain
   spaces.
+
+**Modes: what they cost and what they cannot do.** Where a behaviour below
+was measured, that was between 2026-11-15 and 2026-11-18 with stand-in CLIs,
+so its costs are counted calls, not bills:
+
+- **The ladder is not measured, and it goes stale.** It is your order,
+  confirmed once, and it carries the date of the probe it came from. Nothing
+  re-checks it: a model that gets better, worse or cheaper after that date
+  moves nothing, and only the date printed with every seats line, or a fresh
+  `council-detect.sh`, shows how old the order is. A ranking is only as good
+  as the day it was made, and the plugin cannot tell you that day has passed.
+- **The model check costs money before every council under a mode.** One
+  one-word call per distinct Claude model ID in play, at most three, each a
+  full CLI session billed as such; the run prints the `costUSD` figures it
+  finds after each. `--no-model-check` skips it, at the price of not knowing
+  what answered. The setup's probe in `council-detect.sh` costs separately: one
+  one-word call per candidate model, one for the guard check, and, when Codex
+  is logged in, one Codex call that runs at the model and reasoning effort of
+  your own Codex config, which can be `xhigh`.
+- **The setup's probe can offer a model the model check then refuses.**
+  `council-detect.sh` lists an ID in `MODELS_AVAILABLE` only when that exact
+  ID is among the `claude-...` IDs it finds, so if a CLI bills under a dated
+  or suffixed key, the probe reports that model as not answering rather than
+  offering it for a ladder the model check would refuse. Its reading is still
+  looser than the check's: it reads stdout and stderr together, ignores the
+  exit status, and takes any quoted `"claude-..."` string as reported, where
+  the check reads only the `modelUsage` keys of a call that exited 0.
+  Measured with stand-in CLIs, a failed call whose error names the ID, a
+  fallback announced on stderr, and the ID named outside `modelUsage` are each
+  listed as available by the probe and then refused by the check, at one paid
+  call per council. `/council-doctor` reads more loosely still, on purpose,
+  so that its output stays what it was: it also accepts a reported ID that
+  only starts with the one asked for, so its `ok` line is not a pass of the
+  model check.
+- **Under `standard`, the first model on your ladder also drafts the
+  assignment table**, because the arbiter's model is the one
+  `/council-assign` runs. The mode's assignment effort is the only lever on it.
+- **A two-model account without Codex needs one hand pin to use a mode at
+  all.** Two Claude planners and the arbiter are three seats, and a two-rung
+  ladder runs out: the load stops. Pinning the arbiter to one of the two models
+  lets it load; the plugin allows an arbiter that shares a planner's model and
+  only discourages it.
+- **The situation question comes after the paid probe.** `/council-setup` asks
+  which mode fits only once the probe has run, so the probe is paid for before
+  you have said what you are planning for. A reviewer judged this a missing
+  feature rather than a defect, and it ships as it is.
+- **No "no council" answer is offered before the probe.** Section 8 of
+  `/council-setup` and the mode headers do say when a council is not worth
+  it, but late, after the probe has been paid for. Same judgement, same
+  treatment.
+- **Lines below the one that sources the plugin's config come after the
+  deal.** A project config is a delta that sources the plugin's, and the deal
+  runs inside that source line, so:
+  - a `COUNCIL_PLANNERS` line placed below it changes the planners after the
+    deal has fixed its seat list. The run still refuses a seat in play that
+    took no rung and holds no pin, but the seats line, the load's and
+    `/council-doctor`'s alike, can then leave out a seat that is in play or
+    list one that is not. Keep that line above the source line;
+  - a line below it that writes the plugin's own fallback string, such as a
+    pasted `COUNCIL_MODEL_CLAUDE_ALT="${COUNCIL_MODEL_CLAUDE_ALT:-claude-sonnet-5-5}"`
+    or a whole copy of an older `council.conf`, cannot be told apart from a
+    deliberate hand pin on that model, and it loads, on a model the ladder
+    never named. That is the price of letting a deliberate late pin work;
+  - a line below it that reads a seat the deal did not reach, such as
+    `COUNCIL_MODEL_CLAUDE_ALT` with planners `claude codex`, must write
+    `${COUNCIL_MODEL_CLAUDE_ALT-}`: the bare `$COUNCIL_MODEL_CLAUDE_ALT` stops
+    the load as an unset variable. That one fails loudly, and only under a
+    mode.
 
 ## License
 
