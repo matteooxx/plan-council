@@ -199,8 +199,15 @@ fi
 if [ -n "${COUNCIL_DENY_UNCOVERED:-}" ]; then
   note "the deny rule is a Claude Code permission rule and cannot reach:$COUNCIL_DENY_UNCOVERED"
   note "with one of those as a planner, the attack phase's blindness rests on the"
-  note "prompt rather than on the code. Run council-detect.sh to prove the rule works"
-  note "where it does apply."
+  note "prompt rather than on the code. Run council-detect.sh to see, route by route,"
+  note "what the rule does and does not stop where it does apply: measured 2026-11-18,"
+  note "it is matched against the text of a command and not the path that command"
+  note "resolves to. In the two spellings measured, the path written out and its"
+  note "last character replaced by a \"?\" glob, it stopped the file reader with"
+  note "the path written out, which is the only spelling the reader can take, and"
+  note "Glob and Grep in both; it did not stop a shell command spelling the path"
+  note "another way, and no other spelling was probed. That check can also come"
+  note "back with nothing established, which is not a pass."
 fi
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
