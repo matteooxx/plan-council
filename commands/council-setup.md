@@ -87,9 +87,15 @@ Read the machine-readable summary at the end. Report what was found in plain
 terms, including anything that failed.
 
 - If `CLAUDE_INSTALLED=no`, stop: nothing else matters until it is installed.
+- `DENY_RULE_EFFECTIVE` is the verdict for the layout the plugin permits: a
+  run directory git ignores and tracks nothing in. The refused layout is
+  probed too and printed above the summary, but it does not change this value.
 - If `DENY_RULE_EFFECTIVE=no`, say plainly that the arbiter cannot be kept from
   reading which planner wrote which plan on this machine, so that blindness
   rests on the prompt alone. Let the user decide whether to continue.
+- If `DENY_RULE_EFFECTIVE=untested`, say that the check could not establish
+  whether the rule holds: neither that it does nor that it does not. It is not
+  a pass, and must not be reported as one.
 - If `CODEX=no` or `absent`, the second planner must be another Claude model.
 
 ## 4. Which models
