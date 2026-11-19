@@ -317,6 +317,67 @@ Copying the whole file is how a plain assignment spreads, and a plain
 assignment is what silently overrode an exported value for as long as that bug
 lived.
 
+### Seat functions and the order of lines
+
+Before a phase starts, each seat function is checked for what every seat must
+carry: `"$COUNCIL_DENY"`, `$(council_seat_flags)` unquoted, and `Bash` in
+`--disallowedTools`. It is a text check of the config, and it reads the
+definition the shell keeps, which is the last one executed. So where a line
+sits matters:
+
+- **A seat the plugin ships, if you redefine it, goes below the `.` line.**
+  Above it, the plugin's config defines the seat again and yours never runs.
+  Every phase refuses such a config, and `council-doctor.sh` names both lines,
+  until the definition is moved below the `.` line or deleted. That holds
+  whatever form the definition takes: in column 1, inside an `if`, indented,
+  or written with `function`.
+- **A function the plugin does not ship can sit above the `.` line**, as
+  `/council-setup` writes it: that line cannot change it.
+- **Any other `.` or `source` after the last definition of a seat makes that
+  seat unknown, and the run is refused.** The check does not follow the file,
+  so it cannot tell whether that file defines the seat. A helper sourced below
+  the plugin's line, even one that holds only values, stops every run until
+  its `.` line moves above, or the seat is defined again below it. A `.`
+  inside any function body does the same wherever the function is, indented
+  or not, with its `{` or `(` on the definition line or the next, since the
+  text cannot say when that function is called. To find where a body ends,
+  the check recognises quotes, comments, heredocs, parameter expansions,
+  command substitutions, backslash escapes and `case` patterns, without
+  running or expanding anything; what it still reads wrongly is in the list
+  mentioned below.
+- **The plugin's `.` line counts only on its own, first on its line, outside
+  any block**, and spelled `"$COUNCIL_PLUGIN_ROOT/config/council.conf"`,
+  `"${COUNCIL_PLUGIN_ROOT}/config/council.conf"` or the literal path. Written
+  after `[ -f ... ] &&`, inside an `if`, or with `${COUNCIL_PLUGIN_ROOT:?}`, it
+  makes unknown every seat it defines that is not defined again below it.
+- **A body is read to its first `}` in column 1**, or, when it is written on
+  its definition line, only if that line has exactly one `{` and one `}`, no
+  `#`, an even count of each quote, and ends in `; }` or `& }`. What is read
+  must also end on the line where the shell closes the body, which a heredoc
+  or a quoted string can move. A body the check cannot read to its end is
+  unknown.
+
+Unknown is refused, there is no option to skip it, and the message names the
+line. The check reads text, not the running shell, and it can still be wrong:
+the comments above `council_function_body` and `council_definition_scan` in
+`scripts/lib.sh` list the shapes known to be read wrongly.
+
+Its tests ship with the plugin, so you can run them on your own shell:
+
+```sh
+sh <plugin>/scripts/tests/definitions.sh
+dash <plugin>/scripts/tests/definitions.sh
+```
+
+with `<plugin>` the plugin's directory. They write only to a temporary
+directory, which they remove, and they run `council-assign.sh` and
+`council-doctor.sh` with a stand-in `claude` first on `PATH`, so no model is
+called. When `bash` is installed, one section sources every test config in
+bash and compares the definition bash keeps with the one the check names;
+bash is used there only because it can say where a kept function was
+defined, and agreeing with bash is not agreeing with every shell. The exit
+status is non-zero when any assertion failed.
+
 Every setting also **defers to the environment**, so a single run can be changed
 without editing a file:
 

@@ -40,7 +40,7 @@ canary_arbiter_tools() {
   fi
   _cat_body=$(council_function_body arbiter "$1")
   if [ -z "$_cat_body" ]; then
-    printf '!%s\n' "no arbiter() function was found in $1"
+    printf '!%s\n' "no arbiter() function was found in $1, or the one found could not be read to its end"
     return 1
   fi
   # council_function_body returns the first definition; the shell runs the
@@ -784,9 +784,13 @@ Probes:$CANARY_PROBES"
         CANARY_P_CSIZE=$CANARY_SIZE_PC
         CANARY_T_DSIZE=$CANARY_SIZE_TD
         CANARY_T_CSIZE=$CANARY_SIZE_TC
+        # The child carries the seats' own flags, from council_seat_flags in
+        # lib.sh and never copied here, and denies the same tools by name;
+        # its deny rules are the canary's two, in place of the run's.
         OUTP=$(printf '%s\n' "$CANARY_PROMPT" \
           | ( cd "$CANARY" && claude -p --model "$PROBE_MODEL" --permission-mode default \
-              --allowedTools "$@" --disallowedTools "$RULE_P" "$RULE_T" 2>&1 ) )
+              $(council_seat_flags) \
+              --disallowedTools Edit Write NotebookEdit Bash "$RULE_P" "$RULE_T" 2>&1 ) )
         CANARY_RC=$?
         set --
 

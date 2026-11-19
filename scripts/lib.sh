@@ -614,7 +614,10 @@ council_check_planners() {
   [ "$_n" -le 8 ] || council_die "at most eight planners"
 }
 
-# Checks which configured functions honour the deny rule.
+# Checks the configured functions against what every seat must carry -- the
+# deny rule, $(council_seat_flags) unquoted, and Bash in --disallowedTools --
+# reading the definition the shell keeps, which depends on the order of the
+# lines in the config (council_definition_scan).
 #
 # The rule is a Claude Code permission rule, so it reaches a function that runs
 # "claude" and nothing else. A function driving another CLI -- codex today --
@@ -622,21 +625,706 @@ council_check_planners() {
 # as a planner the attack phase's blindness rests on the prompt, not on the
 # code. That is a real gap and it is named rather than hidden.
 #
+# A second gap follows from the same test. A body is judged only when the
+# word "claude" is in it, so a seat that delegates to a helper which runs
+# claude -- arbiter() { run_seat opus "$@"; } -- lands in
+# COUNCIL_DENY_UNCOVERED, sets no return code, and is checked for none of the
+# three requirements. Whether such a seat should be refused is a decision,
+# not made here.
+#
 # Sets COUNCIL_DENY_UNCOVERED to the functions the rule cannot reach.
-# Returns non-zero only when a claude-driven function drops the rule, which is
-# a straightforward mistake in the config.
+# Returns non-zero when a claude-driven function drops the rule, does not
+# call $(council_seat_flags), or does not name Bash in its --disallowedTools,
+# each a straightforward mistake in the config; when it cannot tell which
+# definition of a function runs, or cannot read it, since then none of the
+# three was checked; and when a definition in the config in use never runs,
+# because a later line sources the plugin's config, which defines the
+# function again. Sets COUNCIL_CHECK_NODENY, COUNCIL_CHECK_NOFLAGS and
+# COUNCIL_CHECK_NOBASH to the functions missing each, so a caller can say
+# which requirement failed; COUNCIL_CHECK_UNKNOWN to the functions whose
+# definition is unknown, and COUNCIL_CHECK_UNKNOWN_AT to one FN:KIND:LINE
+# entry for each, saying why (council_unknown_reasons turns them into
+# sentences); and COUNCIL_CHECK_SHADOWED to FN:A:B entries, a definition at
+# line A that the source line at line B replaces. All are text checks: they
+# read the config, not the process a function starts.
 #
 # The body is read from the config FILES, not from the shell. An earlier
 # version asked the shell with "type", which prints the body under bash and
 # only "is a shell function" under dash -- so it reported a false FAIL on a
 # correct config, under the very shell portability is claimed for. A check
 # that cries wolf is as bad as one that stays silent.
+#
+# council_function_body FN FILE [LINE] -- the text of FN's definition in FILE.
+# Without LINE it starts at the first line where "FN()" begins in column 1;
+# with LINE it starts at that line, and prints nothing unless "FN()" begins
+# there. It prints nothing when it cannot say where the body ends, and the
+# caller reports that as unknown, never as fine.
+#
+# Where a body ends is a line convention, not brace counting: counting braces
+# would need quotes, comments, escapes, expansions, heredocs and case patterns
+# recognised, which is a shell parser. The start line is the whole body only
+# when it meets every condition of council_r1 below. Otherwise the body runs
+# to the first line with "}" in column 1, as every shipped and documented
+# function closes; a line that starts another definition in column 1 first
+# ("name()" or the bash word "function"), or the end of the file, leaves it
+# unread.
+#
+# Reading too little is not safe by default. A body that loses the word
+# "claude" counts as a function the deny rule cannot reach, which sets no
+# return code, so a short read can pass. Two of the conditions exist for that:
+#   arbiter() { # ; }
+# ends in "; }" but the "#" comments the brace out and the body continues; and
+#   arbiter() { [ -n "$1" ] || { echo usage >&2; return 1; }
+# ends in "; }" but closes the inner group, not the body.
+#
+# Three shapes are read wrongly by this function: a body that fails the
+# one-line conditions and is followed by a "}" in column 1 that is not its
+# own (read too far); a line that meets them while its final "; }" sits
+# inside an open quote (read too little); and a "}" in column 1 inside the
+# body, in a heredoc or a multi-line string (read too little). It is kept as
+# it is because the canary in council-detect.sh calls it and depends on its
+# output. council_check_deny_used does not judge such a text: it compares
+# the line where this function stops with the line where
+# council_definition_scan, which recognises quotes and heredocs, sees the
+# body close, and reports the body unread when they differ.
+_COUNCIL_AWK_R1='
+  function council_count(s, ch,   n, i) {
+    n = 0
+    for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == ch) n++
+    return n
+  }
+  # True when the definition line L holds the whole body: exactly one "{"
+  # and one "}", no "#", an even count of each quote character, and, ignoring
+  # trailing blanks and a CR, an end of ";" or "&", optional blanks, "}".
+  function council_r1(l,   t) {
+    t = l
+    sub(/[ \t\r]+$/, "", t)
+    if (council_count(t, "{") != 1 || council_count(t, "}") != 1) return 0
+    if (index(t, "#")) return 0
+    if (council_count(t, sprintf("%c", 34)) % 2) return 0
+    if (council_count(t, sprintf("%c", 39)) % 2) return 0
+    return t ~ /[;&][ \t]*}$/
+  }
+'
 council_function_body() {
-  awk -v fn="$1" '
-    index($0, fn "()") == 1 { inside = 1 }
-    inside { print }
-    inside && /^}/ { exit }
+  awk -v fn="$1" -v start="${3-}" "$_COUNCIL_AWK_R1"'
+    !inside {
+      if (start != "" && FNR != start + 0) next
+      if (index($0, fn "()") != 1) { if (start != "") exit; next }
+      inside = 1
+      if (council_r1($0)) { print; exit }
+      body = $0
+      next
+    }
+    /^}/ { print body; print; exit }
+    /^[A-Za-z_][A-Za-z0-9_]*[ \t]*[(][)]/ { exit }
+    /^function[ \t]/ { exit }
+    { body = body "\n" $0 }
   ' "$2" 2>/dev/null
+}
+
+# council_definition_scan FN CONFIG PLUGIN_HAS_FN -- which definition of FN
+# the shell keeps after sourcing CONFIG, read from the text without running
+# it. Dash cannot be asked: its "type" prints no body (measured 2026-11-19).
+# The scan relies on one property of sh instead: in straight-line top-level
+# text, the definition executed last is the one that stays.
+#
+# Every line is first passed through a recogniser of where the shell text
+# has quotes, comments, heredocs, parameter expansions, command
+# substitutions, backquoted text, backslash escapes and case patterns. It
+# returns the line with all of those replaced by neutral characters, column
+# for column, so that what is left is the structure: words, separators, and
+# a "{" or "}" only where it is a reserved word in command position. It does
+# not evaluate, expand or decide what a command does; it says where those
+# constructs begin and end. It was written on the owner's decision of
+# 2026-11-19, over a council's ruling against a shell parser, and its tests
+# in scripts/tests/definitions.sh compare the scan with what bash keeps.
+#
+# CONFIG is read once, in line order. Three kinds of line are events:
+#   DEF     "FN()" starting in column 1;
+#   PLUGIN  "." or "source" as the first word of a line outside any function
+#           body, whose argument, quotes removed, is
+#           $COUNCIL_PLUGIN_ROOT/config/council.conf, the braced form, or the
+#           path that names; it counts only when PLUGIN_HAS_FN is 1, that is
+#           when the plugin's config yields a body for FN, and is otherwise
+#           ignored, since it cannot change FN;
+#   OTHER   any other "." or "source" in command position.
+# A DEF or PLUGIN that cannot be known to run becomes an OTHER at its line:
+# one inside a multi-line if, case, for, while or until block, or a { or (
+# group, tracked outside function bodies by the words that open and close
+# them in command position; one on a line continued from a line ending in
+# "\", "&&", "||" or "|"; and every one after the block tracking has closed
+# more blocks than it opened. A "." naming the plugin config anywhere else --
+# after "&&", in a one-line if -- is one of these too, and so is one naming
+# it in a spelling not listed above, such as ${COUNCIL_PLUGIN_ROOT:?}. A
+# definition of FN in a form the reader cannot read -- indented, after
+# another command on its line, with a blank before the parentheses, or with
+# the bash word "function" -- is an OTHER too, since it may be the one that
+# runs. An OTHER inside a function body, and a definition of FN there, count
+# at the end of the file: the text cannot say when that function is called.
+# A function body is the text from its definition to the bracket that closes
+# it, "{" with "}" or "(" with ")", wherever the function is defined and
+# whether the bracket is on the definition line or on the next one.
+#
+# Prints one line. With E the last DEF or counting PLUGIN:
+#   "def A Z"          E is a DEF at line A, whose body closes at line Z, or
+#                      0 when it does not close: read the body at A;
+#   "plugin B A"       E is the PLUGIN at line B: the plugin's body runs; A is
+#                      the line of the last definition of FN before B in any
+#                      form -- in column 1, inside a block, or in a form the
+#                      reader does not read -- or 0;
+#   "other L"          a "." or "source", or an eval, at line L after E, or
+#                      with no E;
+#   "exit L"           a return or exit at line L, at top level, before E:
+#                      the config may stop before E;
+#   "cond L"           a DEF or PLUGIN at line L that may not run, after E;
+#   "form L"           a definition of FN at line L in a form not read;
+#   "spelling L"       line L sources the plugin config in a spelling not
+#                      taken as the plugin line;
+#   "inbody L S"       line L, inside the body that starts at line S, sources
+#                      a file or defines FN;
+#   "none"             no event at all.
+# Every result but the first two is unknown, and the caller refuses it.
+#
+# What it does not recognise, from what has been found -- a list, not a
+# claim that nothing else is missed: text produced at run time, by an
+# expansion, an alias or eval, which it does not evaluate (an eval and a
+# return or exit are refused as events, not read); a file it does not
+# follow; a heredoc on a line whose command continues into a quote on the
+# next line; inside a command substitution, case and esac are counted as
+# words wherever they appear, and nothing else about the case is read;
+# "esac" as the first pattern of a case item followed by a blank;
+# bash-only syntax such as [[ ]] and $'...', read as sh. What these do to
+# the result is not the same in every case: the comparison with bash in
+# scripts/tests/definitions.sh shows the ones that are known.
+council_definition_scan() {
+  _cds_root=${COUNCIL_PLUGIN_ROOT-} _cds_ok=${3-0} \
+  awk -v fn="$1" '
+    function ev(t, l, s) { n++; et[n] = t; el[n] = l; es[n] = s }
+    function late(l) { nl++; ll[nl] = l; ls[nl] = bodystart }
+    function blanks(k) { return k > 0 ? sprintf("%" k "s", "") : "" }
+
+    # ---------------------------------------------------------------------
+    # The recogniser. lex(R) returns R with every character that is not
+    # structure replaced, column for column. Its state carries from line to
+    # line: a stack of modes (T the shell text, S single quotes, D double
+    # quotes, P a parameter expansion, C a command substitution, B
+    # backquoted text), a stack of case states, and the heredocs waiting for
+    # their bodies.
+    function push(md) { msn++; ms[msn] = md; cd[msn] = 0; pfd[msn] = 0; cc[msn] = 0; cwd[msn] = ""; ar[msn] = 0 }
+    # The word just ended inside a command substitution: count case and esac.
+    function cword() {
+      if (cwd[msn] == "case") cc[msn]++
+      else if (cwd[msn] == "esac" && cc[msn] > 0) cc[msn]--
+      cwd[msn] = ""
+    }
+    function wordchar() {
+      if (!inword) { inword = 1; wcp = cp; wpos = length(out) + 1; wtext = ""; wplain = 1 }
+    }
+    # A word has ended: drive the case states, keep a brace only when it is
+    # a reserved word in command position, and say whether the next word is
+    # in command position.
+    function endword(   seg) {
+      if (!inword) return
+      inword = 0
+      if (csn && cs[csn] == "subj") cs[csn] = "in"
+      else if (csn && cs[csn] == "in") {
+        if (wplain && wtext == "in") { cs[csn] = "pat"; pw = ""; pstart = 1; pfirst = 1 }
+      } else if (wcp && wplain && wtext == "case") { csn++; cs[csn] = "subj" }
+      else if (wcp && wplain && wtext == "esac" && csn && cs[csn] == "cmd") csn--
+      if (!(wcp && wplain && (wtext == "{" || wtext == "}"))) {
+        seg = substr(out, wpos)
+        gsub(/[{}]/, "_", seg)
+        out = substr(out, 1, wpos - 1) seg
+      }
+      # After the bash word "function" comes a name, and after the name the
+      # body, in command position.
+      if (fnkw) { fnkw = 0; cp = 1 }
+      else if (wcp && wplain && wtext == "function") { fnkw = 1; cp = 0 }
+      else if (wcp && wplain && wtext ~ /^(if|then|do|else|elif|while|until|!|[{]|[}])$/) cp = 1
+      else if (wcp && wtext ~ /^[A-Za-z_][A-Za-z0-9_]*=/) cp = 1
+      else cp = 0
+    }
+    # "esac" ended the case where a pattern was expected.
+    function esacend() {
+      out = substr(out, 1, length(out) - 4) "esac"
+      csn--
+      pw = ""
+      cp = 0
+    }
+    # The delimiter of a heredoc whose operator ends just before J.
+    function heredoc(r, j,   strip, d, c, q) {
+      strip = 0
+      if (substr(r, j, 1) == "-") { strip = 1; j++ }
+      while (substr(r, j, 1) ~ /[ \t]/) j++
+      d = ""; q = ""
+      for (; j <= length(r); j++) {
+        c = substr(r, j, 1)
+        if (q != "") { if (c == q) q = ""; else d = d c; continue }
+        if (c == sq || c == dq) { q = c; continue }
+        if (c == bs) { j++; d = d substr(r, j, 1); continue }
+        if (c ~ /[ \t;&|()<>]/) break
+        d = d c
+      }
+      if (d == "") return
+      hn++; hdel[hn] = d; hstrip[hn] = strip
+    }
+    function lex(r,   nn, i, c, nx, md, k) {
+      out = ""
+      nn = length(r)
+      if (hdon) {
+        k = r
+        if (hstrip[hcur]) sub(/^\t+/, "", k)
+        if (k == hdel[hcur]) { hcur++; if (hcur > hn) { hdon = 0; hn = 0 } }
+        return blanks(nn)
+      }
+      if (inword) wpos = 1
+      if (!contline && ms[msn] == "T") cp = 1
+      contline = 0
+      i = 1
+      while (i <= nn) {
+        c = substr(r, i, 1); nx = substr(r, i + 1, 1)
+        md = ms[msn]
+        if (md == "S") { out = out "_"; if (c == sq) msn--; i++; continue }
+        if (md == "B") {
+          if (c == bs && i < nn) { out = out "__"; i += 2; continue }
+          out = out "_"; if (c == bt) msn--; i++; continue
+        }
+        if (md == "D" || md == "P" || md == "C") {
+          # In a command substitution, the words "case" and "esac" are
+          # counted, so that the ")" of a case pattern does not end it.
+          if (md == "C" && !ar[msn]) {
+            if (c ~ /[A-Za-z]/) cwd[msn] = cwd[msn] c
+            else cword()
+          }
+          if (c == bs) {
+            if (i < nn) { out = out "__"; i += 2 } else { out = out "_"; i++ }
+            continue
+          }
+          if (c == "$" && nx == "{") {
+            push("P"); pfd[msn] = (md == "D" || (md == "P" && pfd[msn - 1]))
+            out = out "__"; i += 2; continue
+          }
+          if (c == "$" && nx == "(") { push("C"); cd[msn] = 1; ar[msn] = (substr(r, i + 2, 1) == "("); out = out "__"; i += 2; continue }
+          if (c == bt) { push("B"); out = out "_"; i++; continue }
+          if (md == "D") { out = out "_"; if (c == dq) msn--; i++; continue }
+          if (c == dq) { push("D"); out = out "_"; i++; continue }
+          if (c == sq && !(md == "P" && pfd[msn])) { push("S"); out = out "_"; i++; continue }
+          if (md == "P") { out = out "_"; if (c == "}") msn--; i++; continue }
+          if (c == "#" && (i == 1 || substr(r, i - 1, 1) ~ /[ \t;&|()]/)) {
+            out = out blanks(nn - i + 1); i = nn + 1; continue
+          }
+          # A heredoc inside a command substitution: its body is read as a
+          # heredoc body, and the substitution goes on after it.
+          if (!ar[msn] && c == "<" && nx == "<" && substr(r, i + 2, 1) == "<") { out = out "___"; i += 3; continue }
+          if (!ar[msn] && c == "<" && nx == "<") { heredoc(r, i + 2); out = out "__"; i += 2; continue }
+          if (cc[msn] == 0) {
+            if (c == "(") cd[msn]++
+            else if (c == ")") { cd[msn]--; if (cd[msn] == 0) msn-- }
+          }
+          out = out "_"; i++; continue
+        }
+        # Mode T, the shell text itself.
+        if (csn && cs[csn] == "pat") {
+          if ((c == " " || c == "\t" || c ~ /[;&<>]/) && pw == "esac" && pfirst) { esacend(); continue }
+          if (c == " " || c == "\t") { out = out c; i++; continue }
+          if (c == "#" && pstart) { out = out blanks(nn - i + 1); i = nn + 1; continue }
+          if (c == "(" && pstart) { out = out "_"; pstart = 0; i++; continue }
+          if (c == ")") { out = out ";"; cs[csn] = "cmd"; cp = 1; pw = ""; i++; continue }
+          if (c == "|") { out = out "_"; pw = ""; pfirst = 0; i++; continue }
+          pstart = 0
+          if (c == bs) {
+            pw = pw "_"
+            if (i < nn) { out = out "__"; i += 2 } else { out = out "_"; i++ }
+            continue
+          }
+          if (c == sq || c == dq || c == bt) {
+            pw = pw "_"; push(c == sq ? "S" : (c == dq ? "D" : "B")); out = out "_"; i++; continue
+          }
+          if (c == "$" && (nx == "{" || nx == "(")) {
+            pw = pw "_"; push(nx == "{" ? "P" : "C"); if (nx == "(") { cd[msn] = 1; ar[msn] = (substr(r, i + 2, 1) == "(") }
+            out = out "__"; i += 2; continue
+          }
+          pw = pw c; out = out "_"; i++; continue
+        }
+        if (c == bs) {
+          if (i == nn) { out = out bs; contline = 1; i++; continue }
+          wordchar(); wplain = 0; out = out "__"; i += 2; continue
+        }
+        if (c == sq || c == dq || c == bt) {
+          wordchar(); wplain = 0
+          push(c == sq ? "S" : (c == dq ? "D" : "B"))
+          out = out "_"; i++; continue
+        }
+        if (c == "$" && (nx == "{" || nx == "(")) {
+          wordchar(); wplain = 0
+          push(nx == "{" ? "P" : "C"); if (nx == "(") { cd[msn] = 1; ar[msn] = (substr(r, i + 2, 1) == "(") }
+          out = out "__"; i += 2; continue
+        }
+        if (c == "#" && !inword) { out = out blanks(nn - i + 1); i = nn + 1; continue }
+        if (c == " " || c == "\t") { endword(); out = out c; i++; continue }
+        if (c ~ /[;&|()<>]/) {
+          endword()
+          # "<<<" is a here-string in bash and not a heredoc.
+          if (c == "<" && nx == "<" && substr(r, i + 2, 1) == "<") {
+            out = out "<<<"; i += 3; cp = 0; continue
+          }
+          if (c == "<" && nx == "<") {
+            heredoc(r, i + 2); out = out "<<"; i += 2; cp = 0; continue
+          }
+          if (c == ";" && (nx == ";" || nx == "&")) {
+            if (csn && cs[csn] == "cmd") { cs[csn] = "pat"; pw = ""; pstart = 1; pfirst = 1 }
+            out = out c nx; i += 2; cp = 1
+            if (substr(r, i, 1) == "&") { out = out "&"; i++ }
+            continue
+          }
+          out = out c; i++
+          cp = (c == "<" || c == ">") ? 0 : 1
+          continue
+        }
+        wordchar(); wtext = wtext c; out = out c; i++
+      }
+      if (ms[msn] == "T") {
+        if (csn && cs[csn] == "pat" && pw == "esac" && pfirst) esacend()
+        if (!contline) { endword(); cp = 1 }
+      }
+      if (ms[msn] == "C") cword()
+      if ((ms[msn] == "T" || ms[msn] == "C") && hn > 0 && !hdon) { hdon = 1; hcur = 1 }
+      return out
+    }
+
+    # ---------------------------------------------------------------------
+    # The structure, read from what lex returns.
+    #
+    # The words of S in command position, into cw[1..ncw].
+    function cmdwords(s,   t, k, i, w, pos) {
+      t = s
+      gsub(sep, " & ", t)
+      k = split(t, tk, /[ \t]+/)
+      ncw = 0; pos = 1
+      for (i = 1; i <= k; i++) {
+        w = tk[i]
+        if (w == "") continue
+        if (w ~ ("^" sep "$")) { pos = 1; continue }
+        if (!pos) continue
+        ncw++; cw[ncw] = w
+        if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+        if (w ~ /^(if|then|do|else|elif|while|until|!|[{])$/) continue
+        pos = 0
+      }
+    }
+    function sources(s,   i) {
+      cmdwords(s)
+      for (i = 1; i <= ncw; i++) if (cw[i] == "." || cw[i] == "source") return 1
+      return 0
+    }
+    # The shell word of the raw text S that starts at I, quotes removed; its
+    # end in wend.
+    function word(s, i,   c, q, w) {
+      w = ""; q = ""
+      for (; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; else w = w c; continue }
+        if (c == dq || c == sq) { q = c; continue }
+        if (c ~ /[ \t;&|<>()]/) break
+        w = w c
+      }
+      wend = i
+      return w
+    }
+    # 1 when the word A, quotes removed, names the plugin config in one of
+    # the three spellings the scan takes; 2 when it names it another way,
+    # such as ${COUNCIL_PLUGIN_ROOT:?}; 0 otherwise.
+    function plugspell(a) {
+      if (a == "$COUNCIL_PLUGIN_ROOT/config/council.conf" ||
+          a == "${COUNCIL_PLUGIN_ROOT}/config/council.conf" ||
+          (root != "" && a == root "/config/council.conf")) return 1
+      if (index(a, "COUNCIL_PLUGIN_ROOT") && a ~ /\/config\/council\.conf$/) return 2
+      return 0
+    }
+    # The number of "." or "source" words in the structure M followed by a
+    # word of the raw text R that names the plugin config, in any spelling.
+    function plugsources(m, r,   off, k) {
+      off = 0; k = 0
+      while (match(substr(m, off + 1), /(^|[;&|() \t])(\.|source)[ \t]+/)) {
+        if (plugspell(word(r, off + RSTART + RLENGTH))) k++
+        off = off + RSTART + RLENGTH - 1
+      }
+      return k
+    }
+    # 1 when M is "." or "source" naming the plugin config in a spelling the
+    # scan takes, followed by nothing, ";", "&&" or "||"; 2 when it names it
+    # followed by anything else; 3 when it names it in another spelling; 0
+    # when it does not name it.
+    function plugin_line(m, r,   a, rest, k) {
+      if (!match(m, /^[ \t]*(\.|source)[ \t]+/)) return 0
+      a = word(r, RLENGTH + 1)
+      k = plugspell(a)
+      if (k == 0) return 0
+      if (k == 2) return 3
+      rest = substr(m, wend)
+      sub(/^[ \t]+/, "", rest)
+      if (rest == "" || rest ~ /^(&&|[|][|]|;$|;[^;])/) return 1
+      return 2
+    }
+    # The block words of S, in command position, applied to depth.
+    function blocks(s,   i) {
+      cmdwords(s)
+      for (i = 1; i <= ncw; i++) {
+        if (cw[i] ~ /^(if|case|for|while|until|[{])$/) depth++
+        else if (cw[i] ~ /^(fi|esac|done|[}])$/) depth--
+      }
+      if (s ~ /[(][ \t]*$/) depth++
+      if (s ~ /^[ \t]*[)]/) depth--
+      if (depth < 0) { confused = 1; depth = 0 }
+    }
+    # Walks the brackets of the structure S from depth B: "{" and "(" open,
+    # "}" and ")" close. Returns the new depth. When it reaches zero, bclosed
+    # is 1 and bpos is the column after the closing bracket.
+    function bodyscan(s, b,   j, c) {
+      bclosed = 0; bpos = 0
+      for (j = 1; j <= length(s); j++) {
+        c = substr(s, j, 1)
+        if (c == "{" || c == "(") b++
+        else if (c == "}" || c == ")") {
+          b--
+          if (b == 0) { bclosed = 1; bpos = j + 1; return b }
+        }
+      }
+      return b
+    }
+    # The first text of a function body, at line lno: what is sourced or
+    # defined in it counts at the end of the file. Returns the column where
+    # the text after a body that closes in M begins, or 0, and opens ibody
+    # when the body does not close.
+    function bodystartof(m,   b, head) {
+      b = bodyscan(m, 0)
+      head = bclosed ? substr(m, 1, bpos - 1) : m
+      if (head ~ stray || sources(head)) late(lno)
+      if (b > 0) { ibody = 1; ibal = b; return 0 }
+      if (bclosed) {
+        if (curdef) { ez[curdef] = lno; curdef = 0 }
+        return bpos
+      }
+      curdef = 0
+      return 0
+    }
+    # A line outside any function body, as structure M and raw text R.
+    function toplevel(m, r, blocked,   i, p, isplug, npl, rm, rr, st, tp) {
+      if (m ~ stray) ev("F", lno)
+      # A function defined after column 1: only the text before it, and
+      # what follows its body once that closes, is read as top level.
+      if (match(m, anydef)) {
+        st = RSTART
+        rm = substr(m, st + RLENGTH); rr = substr(r, st + RLENGTH)
+        m = substr(m, 1, st); r = substr(r, 1, st)
+        if (st == 1 && m ~ /^[A-Za-z_]/) { m = ""; r = "" }
+        bodystart = lno
+        curdef = 0
+        if (rm ~ /^[ \t]*$/) pending = 1
+        else {
+          tp = bodystartof(rm)
+          if (tp) { m = m " ; " substr(rm, tp); r = r " ; " substr(rr, tp) }
+        }
+      }
+      p = plugin_line(m, r)
+      npl = plugsources(m, r)
+      cmdwords(m)
+      for (i = 1; i <= ncw; i++) {
+        # eval can define or source anything, so it is an OTHER. return
+        # and exit can stop the config before a later line runs; they are
+        # an event that matters only before the winning line.
+        if (cw[i] == "eval") { ev("O", lno); continue }
+        if (cw[i] == "return" || cw[i] == "exit") { ev("X", lno); continue }
+        if (cw[i] != "." && cw[i] != "source") continue
+        isplug = (i == 1 && p != 0)
+        if (isplug) npl--
+        if (isplug && !plugok) continue
+        if (isplug && p == 3) ev("S", lno)
+        else if (isplug && p == 1 && !blocked) ev("P", lno)
+        else if (isplug) ev("C", lno)
+        else if (npl > 0) { npl--; if (plugok) ev("C", lno) }
+        else ev("O", lno)
+      }
+      blocks(m)
+    }
+    BEGIN {
+      dq = sprintf("%c", 34); sq = sprintf("%c", 39)
+      bs = sprintf("%c", 92); bt = sprintf("%c", 96)
+      root = ENVIRON["_cds_root"]
+      plugok = (ENVIRON["_cds_ok"] == "1")
+      stray = "(^|[^A-Za-z0-9_])(" fn "[ \t]*[(][)]|function[ \t]+" fn "([^A-Za-z0-9_]|$))"
+      anydef = "(^|[;&|(){ \t])([A-Za-z_][A-Za-z0-9_]*[ \t]*[(][ \t]*[)]|function[ \t]+[A-Za-z_][A-Za-z0-9_]*([ \t]*[(][ \t]*[)])?)"
+      sep = "[;&|()" bt "]"
+      msn = 1; ms[1] = "T"; cp = 1
+    }
+    {
+      gsub(/\r/, "")
+      raw = $0
+      m = lex(raw)
+      # A backslash at the end of a line joins it to the next one: the two
+      # are read as one line, numbered as the first, which is the number
+      # the shell gives a definition written that way.
+      if (contline) {
+        if (!joined) { joined = 1; jl = NR }
+        jm = jm substr(m, 1, length(m) - 1)
+        jr = jr substr(raw, 1, length(raw) - 1)
+        next
+      }
+      lno = NR
+      if (joined) { m = jm m; raw = jr raw; lno = jl; jm = ""; jr = ""; joined = 0 }
+      if (m ~ /^[ \t]*$/) next
+      # The line after a definition whose own line ended at the
+      # parentheses: when it opens the body, read it as the body.
+      if (pending) {
+        pending = 0
+        if (m ~ /^[ \t]*[{(]/) {
+          tp = bodystartof(m)
+          if (tp) toplevel(substr(m, tp), substr(raw, tp), depth > 0 || confused)
+          next
+        }
+        curdef = 0
+      }
+      # Inside a function body. What follows the bracket that closes it is
+      # read as top level, so that a "}; fi" still closes its block.
+      if (ibody) {
+        ibal = bodyscan(m, ibal)
+        head = bclosed ? substr(m, 1, bpos - 1) : m
+        if (index(head, fn "()") == 1 || head ~ stray || sources(head)) late(lno)
+        if (bclosed) {
+          ibody = 0
+          if (curdef) { ez[curdef] = lno; curdef = 0 }
+          toplevel(substr(m, bpos), substr(raw, bpos), depth > 0 || confused)
+        } else if (ibal <= 0) { ibody = 0; curdef = 0 }
+        next
+      }
+      blocked = (depth > 0 || cont || confused)
+      cont = (m ~ /(\\|&&|[|])[ \t]*$/)
+      if (match(m, /^[A-Za-z_][A-Za-z0-9_]*[ \t]*[(][ \t]*[)]/) || match(m, /^function[ \t]+[A-Za-z_][A-Za-z0-9_]*([ \t]*[(][ \t]*[)])?/)) {
+        rm = substr(m, RLENGTH + 1); rr = substr(raw, RLENGTH + 1)
+        name = substr(m, 1, RLENGTH)
+        sub(/^function[ \t]+/, "", name)
+        sub(/[ \t]*[(][ \t]*[)]$/, "", name)
+        curdef = 0
+        if (index(m, fn "()") == 1) { ev(blocked ? "K" : "D", lno); if (!blocked) curdef = n }
+        else if (name == fn) ev("F", lno)
+        bodystart = lno
+        cont = 0
+        if (rm ~ /^[ \t]*$/) { pending = 1; next }
+        tp = bodystartof(rm)
+        if (tp) toplevel(substr(rm, tp), substr(rr, tp), depth > 0 || confused)
+        next
+      }
+      toplevel(m, raw, blocked)
+    }
+    END {
+      for (i = 1; i <= nl; i++) ev("L", ll[i], ls[i])
+      e = 0
+      for (i = 1; i <= n; i++) if (et[i] == "D" || et[i] == "P") e = i
+      for (i = e + 1; i <= n; i++) {
+        if (et[i] == "O") { print "other " el[i]; exit }
+        if (et[i] == "C" || et[i] == "K") { print "cond " el[i]; exit }
+        if (et[i] == "F") { print "form " el[i]; exit }
+        if (et[i] == "S") { print "spelling " el[i]; exit }
+        if (et[i] == "L") { print "inbody " el[i] " " es[i]; exit }
+      }
+      for (i = 1; i < e; i++) if (et[i] == "X") { print "exit " el[i]; exit }
+      if (e == 0) { print "none"; exit }
+      if (et[e] == "D") { print "def " el[e] " " (ez[e] + 0); exit }
+      # A definition of any form above the source line never runs if the
+      # line runs: one in column 1, one inside a block, or one in a form the
+      # reader does not read.
+      a = 0
+      for (i = 1; i < e; i++) if (et[i] == "D" || et[i] == "K" || et[i] == "F") a = el[i]
+      print "plugin " el[e] " " a
+    }
+  ' "$2" 2>/dev/null
+}
+
+# council_body_denies_bash BODY -- true when BODY, the text of one function,
+# names Bash among the arguments of a --disallowedTools. Read as text:
+# continuation lines are joined, whole-line comments dropped, and the arguments
+# are the words after the flag up to the next word that starts an option, a
+# redirection or the end of the command. Bash, "Bash" and a comma-separated
+# --disallowedTools=...,Bash,... count; Bash(...) does not, since it names a
+# command pattern and not the tool.
+council_body_denies_bash() {
+  printf '%s\n' "$1" | awk '
+    BEGIN { bs = sprintf("%c", 92); q = sprintf("%c", 34); found = 0; buf = "" }
+    /^[ \t]*#/ { next }
+    {
+      line = $0
+      if (substr(line, length(line), 1) == bs) { buf = buf substr(line, 1, length(line) - 1) " "; next }
+      buf = buf line
+      n = split(buf, t, /[ \t]+/)
+      on = 0
+      for (i = 1; i <= n; i++) {
+        w = t[i]
+        if (w == "") continue
+        if (w == "--disallowedTools" || w == "--disallowed-tools") { on = 1; continue }
+        if (index(w, "--disallowedTools=") == 1 || index(w, "--disallowed-tools=") == 1) {
+          m = split(substr(w, index(w, "=") + 1), v, ",")
+          for (k = 1; k <= m; k++) if (v[k] == "Bash") found = 1
+          on = 0
+          continue
+        }
+        if (on && (substr(w, 1, 1) == "-" || w ~ /^[<>|;&)]/)) on = 0
+        if (on && (w == "Bash" || w == q "Bash" q)) found = 1
+      }
+      buf = ""
+    }
+    END { exit found ? 0 : 1 }'
+}
+
+# council_unknown_reasons -- one line per entry of COUNCIL_CHECK_UNKNOWN_AT,
+# saying why that function's definition is unknown. Shared by the refusal
+# below, the note in council_check_deny_used and council-doctor.sh.
+council_unknown_reasons() {
+  for _ur in ${COUNCIL_CHECK_UNKNOWN_AT-}; do
+    _ur_fn=${_ur%%:*}
+    _ur_rest=${_ur#*:}
+    _ur_kind=${_ur_rest%%:*}
+    _ur_line=${_ur_rest#*:}
+    _ur_line=${_ur_line%%:*}
+    _ur_start=${_ur_rest##*:}
+    case "$_ur_kind" in
+      unread) printf '%s\n' "$_ur_fn: its definition at line $_ur_line could not be read to its end. The check reads a body that closes with } in column 1 before another definition starts in column 1, or one written whole on its definition line with exactly one { and one }, no #, an even count of each quote, and an end of \"; }\" or \"& }\"; and the text it reads must end on the line where the shell closes the body, which a heredoc or a quoted string can move." ;;
+      other) printf '%s\n' "$_ur_fn: line $_ur_line sources a file the check does not read, after the last definition it can see, so the body that runs may come from that file." ;;
+      cond) printf '%s\n' "$_ur_fn: line $_ur_line defines it or sources the plugin's config/council.conf where the check cannot tell whether that line runs: inside a multi-line if, case, for, while, until or { } block, after another command on the line such as [ -f ... ] &&, on a line continued from the one before, with something after it on its line other than a comment, ;, && or ||, or after a word that closes a block the check did not see open. Whichever that line holds, write it at the top level, outside any block and not continued from the line before: a definition in column 1, or the line that sources the plugin's config on its own, first on its line." ;;
+      exit) printf '%s\n' "$_ur_fn: line $_ur_line can stop the config with return or exit before the line that defines it, so the check cannot tell whether that line runs." ;;
+      spelling) printf '%s\n' "$_ur_fn: line $_ur_line sources the plugin's config/council.conf in a spelling the check does not take as that line. It takes \"\$COUNCIL_PLUGIN_ROOT/config/council.conf\", the same with \${COUNCIL_PLUGIN_ROOT}, or the literal path." ;;
+      form) printf '%s\n' "$_ur_fn: line $_ur_line defines it in a form the check does not read: indented, after another command on the line, with a blank before the parentheses, or with the word function." ;;
+      inbody) printf '%s\n' "$_ur_fn: line $_ur_line, inside the function body that starts at line $_ur_start, sources a file or defines it, and the text cannot say when that function is called." ;;
+      *) printf '%s\n' "$_ur_fn: the config defines it nowhere the check can see, and does not source the plugin's config/council.conf where the plugin defines it." ;;
+    esac
+  done
+}
+
+# The refusal for functions whose definition council_check_deny_used could not
+# read or could not tell would run (COUNCIL_CHECK_UNKNOWN). One copy, used by
+# council_require_deny_used and by council-assign.sh, so the two cannot drift
+# apart.
+council_unread_message() {
+  printf '%s' "could not tell which definition runs, or could not read it, for:${COUNCIL_CHECK_UNKNOWN-}, so none of the three requirements was checked for it: the deny rule, \$(council_seat_flags) and Bash in --disallowedTools. In $COUNCIL_CONFIG_USED: $(council_unknown_reasons | tr '\n' ' ')A definition the check reads is one at the top level, in column 1, below every line that sources a file other than the plugin's config, closing with } in column 1, as config/council.conf does. Unknown is not the same as fine, and there is no option to skip this check. Nothing has been run."
+}
+
+# The refusal for a definition that never runs (COUNCIL_CHECK_SHADOWED): the
+# config in use defines a seat and then sources the plugin's config, which
+# defines it again, and the shell keeps the one executed last. The body that
+# runs is the plugin's, and the requirements were checked on it, so this is
+# not about the seat's safety. It is the same failure as a setting overridden
+# in silence, which council_load_config refuses: the command line the author
+# wrote is not the one that runs. Decided by a council on 2026-11-19; a
+# warning that let the run continue never stopped anything (see
+# council_require_deny_used).
+council_shadowed_message() {
+  _sm_list=""
+  for _sm in ${COUNCIL_CHECK_SHADOWED-}; do
+    _sm_fn=${_sm%%:*}
+    _sm_rest=${_sm#*:}
+    _sm_list="$_sm_list $_sm_fn at line ${_sm_rest%%:*}, defined again by the file sourced at line ${_sm_rest#*:};"
+  done
+  printf '%s' "in $COUNCIL_CONFIG_USED these functions are defined above the line that sources the plugin's config/council.conf, which defines them again, so the definition written there never runs:$_sm_list the plugin's runs instead, and that is the one the requirements were checked on. Move each definition below that line, or delete it. Nothing has been run."
 }
 
 # Like council_check_deny_used, but refuses to start the run.
@@ -648,51 +1336,193 @@ council_function_body() {
 # arbiter of a real council run: every call site ended in "|| true", so the
 # warning never stopped anything, and a planner missing the rule produced a
 # line of text and a full-price council whose blindness rested on nothing.
+#
+# A function whose definition could not be read refuses as well, and there is
+# no flag to walk past it: the owner decided so on 2026-11-19, because this
+# project had just removed a gate that could be walked past by accident.
+# council-assign.sh splits its refusals by cause -- it continues when only the
+# deny rule is missing, since attribution is not at stake there, and stops on
+# capability -- but an unread function has no known cause to split on: nothing
+# is known about it, capability included. So every phase refuses it, assignment
+# too, and that is deliberate, not a case the split forgot.
 council_require_deny_used() {
   council_check_deny_used "$1" && return 0
-  council_die "that function can read the run directory, and with it which planner wrote which plan. Add \"\$COUNCIL_DENY\" and \"\$COUNCIL_DENY2\" to its --disallowedTools, as config/council.conf does. This was a warning that let the run continue; it stops the run now, because a council whose arbiter can look up the attribution is not worth paying for."
+  if [ -n "${COUNCIL_CHECK_UNKNOWN-}" ]; then
+    council_die "$(council_unread_message)"
+  fi
+  # Before the message below, which would be false here: the body that runs
+  # may carry everything a seat must.
+  if [ -n "${COUNCIL_CHECK_SHADOWED-}" ]; then
+    council_die "$(council_shadowed_message)"
+  fi
+  council_die "a claude function named above lacks what every seat must carry. One without \"\$COUNCIL_DENY\" breaks the requirement that keeps a seat out of the run directory, where council.txt says which planner wrote which plan: add \"\$COUNCIL_DENY\" and \"\$COUNCIL_DENY2\" to its --disallowedTools. One without \$(council_seat_flags) starts claude with the host's settings, hooks and connector tools: put \$(council_seat_flags), unquoted, on its claude command line. One without Bash in its --disallowedTools relies on \$(council_seat_flags) alone to keep the shell out, and on nothing when it lacks those flags too: add Bash there. config/council.conf does all three. A missing deny rule was a warning that let the run continue; it stops the run now, because a council whose arbiter can look up the attribution is not worth paying for."
 }
 
 council_check_deny_used() {
   _missing=""
+  _noflags=""
+  _quoted=""
+  _nobash=""
+  _nobash_bare=""
   _unknown=""
+  _unknown_at=""
+  _shadowed=""
   COUNCIL_DENY_UNCOVERED=""
-  # The function may be defined in the config in use or in the plugin's own,
-  # which a project config is meant to source.
-  _files=$COUNCIL_CONFIG_USED
+  COUNCIL_CHECK_NODENY=""
+  COUNCIL_CHECK_NOFLAGS=""
+  COUNCIL_CHECK_NOBASH=""
+  COUNCIL_CHECK_UNKNOWN=""
+  COUNCIL_CHECK_UNKNOWN_AT=""
+  COUNCIL_CHECK_SHADOWED=""
+  # Which definition runs is read from the config in use, in line order, by
+  # council_definition_scan. The plugin's own config is read only when the
+  # last thing there that defines the function is the line that sources it.
+  # An earlier version took the first body it found, in the config in use and
+  # then in the plugin's, while the shell keeps the last one executed: it
+  # could approve a body that never runs, and a body in a third file was
+  # never seen, so the plugin's was approved in its place.
   _plugin_cfg="${COUNCIL_PLUGIN_ROOT:-}/config/council.conf"
-  if [ -f "$_plugin_cfg" ] && [ "$_plugin_cfg" != "$COUNCIL_CONFIG_USED" ]; then
-    _files="$_files $_plugin_cfg"
+  if [ ! -f "$_plugin_cfg" ] || [ "$_plugin_cfg" = "$COUNCIL_CONFIG_USED" ]; then
+    _plugin_cfg=""
   fi
   for _fn in $1; do
     type "$_fn" >/dev/null 2>&1 || continue
+    _plugin_body=""
+    [ -n "$_plugin_cfg" ] && _plugin_body=$(council_function_body "$_fn" "$_plugin_cfg")
+    _plugin_has=0
+    [ -n "$_plugin_body" ] && _plugin_has=1
+    _scan=$(council_definition_scan "$_fn" "$COUNCIL_CONFIG_USED" "$_plugin_has")
+    _scan=${_scan:-none}
     _body=""
-    for _f in $_files; do
-      _body=$(council_function_body "$_fn" "$_f")
-      [ -n "$_body" ] && break
-    done
+    case "$_scan" in
+      "def "*)
+        # "def A Z": the definition at line A, whose body the scan saw close
+        # at line Z (0 when it did not). The reader keeps its own line
+        # convention, which the canary relies on; when the text it returns
+        # does not end on line Z, the reader stopped somewhere the shell did
+        # not -- a "}" in column 1 inside a heredoc, a one-line body whose
+        # "; }" sits inside a quote, a close that is not its own -- and the
+        # body is unread, not judged on the wrong text.
+        _da=${_scan#def }
+        _dz=${_da#* }
+        _da=${_da%% *}
+        _body=$(council_function_body "$_fn" "$COUNCIL_CONFIG_USED" "$_da")
+        if [ -n "$_body" ] && [ "$(printf '%s\n' "$_body" | wc -l | tr -d ' ')" -ne $((_dz - _da + 1)) ]; then
+          _body=""
+        fi
+        [ -n "$_body" ] || _unknown_at="$_unknown_at $_fn:unread:$_da"
+        ;;
+      "plugin "*)
+        _body=$_plugin_body
+        [ -n "$_body" ] || _unknown_at="$_unknown_at $_fn:none"
+        # A definition above the source line that wins, of a function the
+        # plugin's config itself defines, never runs: refused, see
+        # council_shadowed_message. A function the plugin does not ship,
+        # written above that line as commands/council-setup.md recommends,
+        # never reaches this branch: the source line cannot change it.
+        _sh_b=${_scan#plugin }
+        _sh_a=${_sh_b#* }
+        _sh_b=${_sh_b%% *}
+        if [ "$_sh_a" != 0 ] && [ -n "$_plugin_body" ]; then
+          _shadowed="$_shadowed $_fn:$_sh_a:$_sh_b"
+        fi
+        ;;
+      *)
+        _unknown_at="$_unknown_at $_fn:$(printf '%s' "$_scan" | tr ' ' ':')"
+        ;;
+    esac
     if [ -z "$_body" ]; then
       _unknown="$_unknown $_fn"
       continue
     fi
     case "$_body" in
       *claude*)
-        case "$_body" in
-          *COUNCIL_DENY*) ;;
+        # The deny and flags tests read the body without its whole-line
+        # comments, as council_body_denies_bash does: a commented-out
+        # occurrence passed both before.
+        _code=$(printf '%s\n' "$_body" | sed '/^[[:space:]]*#/d')
+        # The name must stand on its own: $COUNCIL_DENY or ${COUNCIL_DENY
+        # followed by a character that cannot continue a shell name. An
+        # earlier pattern, *COUNCIL_DENY*, was satisfied by "$COUNCIL_DENY2"
+        # alone, and the 0.4.0 gate passed a function that carried only that.
+        # Under the default layout, a run in ROOT/.council, that was a defect
+        # of the check: planning sets COUNCIL_DENY2 to COUNCIL_DENY, and review
+        # and assignment set it to the whole ROOT/.council tree, which holds
+        # the run. It was a real gap when the run directory lies anywhere else:
+        # council-plan.sh --out puts it anywhere, and council-review.sh's own
+        # refusal invites placing it "where git ignores it", which can be any
+        # ignored path inside ROOT, while COUNCIL_DENY2 still names only
+        # ROOT/.council. Such a function was not denied the run directory. In
+        # 0.4.0 that held inside ROOT and outside it alike (a read outside the
+        # root was measured unrefused on 2026-11-14). With the flags of
+        # council_seat_flags, a read by absolute path outside the root was
+        # refused (measured 2026-11-19), so the part of that gap still open
+        # without this exact match is a run directory at an ignored path
+        # inside ROOT.
+        case "$_code" in
+          *'$COUNCIL_DENY'[!A-Za-z0-9_]*|*'${COUNCIL_DENY'[!A-Za-z0-9_]*) ;;
           *) _missing="$_missing $_fn" ;;
         esac
+        # Quoted, "$(council_seat_flags)" reaches the CLI as one argument. The
+        # reviewer of this change ran that form and the CLI refused it, with
+        # "error: unknown option '--restricted --tools ...'", so it fails
+        # loudly rather than weakening the seat; what it cost here was an ok
+        # from this check. It is refused as its own case.
+        case "$_code" in
+          *'"$(council_seat_flags)'*) _quoted="$_quoted $_fn" ;;
+          *'$(council_seat_flags)'*) ;;
+          *) _noflags="$_noflags $_fn" ;;
+        esac
+        if ! council_body_denies_bash "$_body"; then
+          case "$_code" in
+            *'"$(council_seat_flags)'*) _nobash_bare="$_nobash_bare $_fn" ;;
+            *'$(council_seat_flags)'*) _nobash="$_nobash $_fn" ;;
+            *) _nobash_bare="$_nobash_bare $_fn" ;;
+          esac
+        fi
         ;;
       *) COUNCIL_DENY_UNCOVERED="$COUNCIL_DENY_UNCOVERED $_fn" ;;
     esac
   done
+  COUNCIL_CHECK_UNKNOWN_AT=$_unknown_at
+  COUNCIL_CHECK_SHADOWED=$_shadowed
   if [ -n "$_unknown" ]; then
-    council_say "note: could not find the definition of$_unknown in $COUNCIL_CONFIG_USED, so the deny rule was not checked for it. Unknown is not the same as fine."
+    council_say "note: could not tell which definition runs, or could not read it, for$_unknown in $COUNCIL_CONFIG_USED, so none of the three requirements was checked for it: the deny rule, \$(council_seat_flags) and Bash in --disallowedTools. Unknown is not the same as fine. $(council_unknown_reasons | tr '\n' ' ')"
+  fi
+  _cdu_rc=0
+  [ -n "$_unknown" ] && _cdu_rc=1
+  if [ -n "$_shadowed" ]; then
+    council_say "WARNING: $(council_shadowed_message | sed 's/ Nothing has been run\.$//')"
+    _cdu_rc=1
   fi
   if [ -n "$_missing" ]; then
-    council_say "WARNING: these claude functions do not pass \$COUNCIL_DENY to their CLI, so they can read the run directory and learn which planner wrote which plan:$_missing"
-    return 1
+    council_say "WARNING: these claude functions do not pass \$COUNCIL_DENY to their CLI, the rule that keeps a seat out of the run directory, where council.txt says which planner wrote which plan:$_missing"
+    _cdu_rc=1
   fi
-  return 0
+  if [ -n "$_noflags" ]; then
+    council_say "WARNING: these claude functions do not call \$(council_seat_flags), so the session they start loads the host's settings, hooks and connector tools and answers a different question from the seats the plugin ships:$_noflags"
+    _cdu_rc=1
+  fi
+  if [ -n "$_quoted" ]; then
+    council_say "WARNING: these claude functions quote \$(council_seat_flags), which hands the CLI the flags as one argument it refuses; write it unquoted:$_quoted"
+    _cdu_rc=1
+  fi
+  if [ -n "$_nobash" ]; then
+    council_say "WARNING: these claude functions do not name Bash in their --disallowedTools. They call \$(council_seat_flags), whose flags leave the shell out today; the name is kept so that it stays out if a CLI release changed what those flags remove:$_nobash"
+    _cdu_rc=1
+  fi
+  if [ -n "$_nobash_bare" ]; then
+    council_say "WARNING: these claude functions do not name Bash in their --disallowedTools and do not call \$(council_seat_flags) unquoted either, so nothing in their definition keeps the shell out:$_nobash_bare"
+    _cdu_rc=1
+  fi
+  COUNCIL_CHECK_NODENY=$_missing
+  COUNCIL_CHECK_NOFLAGS="$_noflags$_quoted"
+  COUNCIL_CHECK_NOBASH="$_nobash$_nobash_bare"
+  COUNCIL_CHECK_UNKNOWN=$_unknown
+  if [ "$_cdu_rc" -ne 0 ]; then
+    council_say "note: this is a text check. It reads each function's definition in the config file, not the process the function starts."
+  fi
+  return "$_cdu_rc"
 }
 
 # The effort level for the phase now running. One planner function serves both
@@ -714,6 +1544,62 @@ council_budget_flags() {
   if [ -n "${COUNCIL_BUDGET_USD:-}" ]; then
     printf -- '--max-budget-usd %s' "$COUNCIL_BUDGET_USD"
   fi
+}
+
+# Expands to the flags every claude session this plugin starts must carry: the
+# four claude functions in config/council.conf, council_probe_call below and
+# the deny canary's child in council-detect.sh. Expanded unquoted at the call
+# site, as council_budget_flags is, and written only here: a second copy of a
+# flag list drifts from the first in silence.
+#
+# What each flag is for:
+#   --tools Read,Glob,Grep    the built-in tools the session gets, and no
+#                             others.
+#   --restricted              removes the tools that run commands and confines
+#                             the file tools to the working directory.
+#   --setting-sources project,local
+#                             loads settings from those two sources and not
+#                             from the user's own (the CLI's --help).
+#   --strict-mcp-config       starts only the MCP servers named on the command
+#                             line, and none is named here.
+#   --disable-slash-commands  disables skills and commands (the CLI's --help;
+#                             not measured on its own).
+#
+# Measured 2026-11-19, each with a control:
+#   - --allowedTools is not exclusive. A child given only Read ran
+#     "git log --oneline -1": allowed, and it printed the real commit. The
+#     protection of 0.4.0 rested on that list.
+#   - With the 0.4.0 list and --disallowedTools Edit Write NotebookEdit, a
+#     child ran "git show --output=b5-write-probe.txt -s HEAD": allowed, and
+#     the file existed, 4370 bytes, inside the context root.
+#   - A deny rule on a command prefix, Bash(git show --output:*), did not stop
+#     it: the obvious spelling and the same flags reordered were both allowed
+#     and both wrote the file.
+#   - --tools is exclusive: with --tools Read,Glob,Grep the tool inventory came
+#     back as exactly Glob, Grep, Read.
+#   - A tool denied by name is removed: with Bash in --disallowedTools it was
+#     refused, "the Bash tool isn't available in this session".
+#   - --restricted on its own: a read of an absolute path outside the root was
+#     refused, one inside it allowed (863 lines). On its own it does not
+#     remove Write, Edit, NotebookEdit, Agent, WebSearch or the worktree tools;
+#     that is what --tools is here for.
+#   - Without settings flags a seat held the host's connector tools, among
+#     them tools that draft messages and handle attachments. Either
+#     --setting-sources project,local or --strict-mcp-config, alone, brought
+#     the MCP tool count to 0.
+#   - The whole set, measured together: inventory Glob, Grep, Read; a read
+#     inside the root allowed (863 lines); an absolute path outside it
+#     refused; .council refused; a search returned 6 paths; and the identity
+#     gate still reported modelUsage claude-opus-5-5.
+#
+# The call sites also keep Edit, Write, NotebookEdit and Bash in
+# --disallowedTools, although --tools leaves them out today. Denying a tool by
+# name was measured effective (above). Keeping the names rests on a belief
+# about the CLI's future, not on a measurement: if a release made --tools add
+# to the default set instead of replacing it, the names would be the only thing
+# left keeping those tools out.
+council_seat_flags() {
+  printf -- '--restricted --tools Read,Glob,Grep --setting-sources project,local --strict-mcp-config --disable-slash-commands'
 }
 
 # The Nth letter, 1-based.
@@ -851,7 +1737,9 @@ council_prompt_opens_with_field() {
 # a fallback can be announced on stderr by name and a failed call can name the
 # model it failed on.
 council_probe_call() {
-  printf 'Reply with the single word ok.' | claude -p --model "$1" --output-format json
+  printf 'Reply with the single word ok.' | claude -p --model "$1" --output-format json \
+    $(council_seat_flags) \
+    --disallowedTools Edit Write NotebookEdit Bash
 }
 
 # council_billed_ids -- reads, on stdin, the stdout of one call made with

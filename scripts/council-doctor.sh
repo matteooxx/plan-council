@@ -189,13 +189,53 @@ fi
 echo "Blindness rule"
 FNS="arbiter"
 for p in $COUNCIL_PLANNERS; do FNS="$FNS planner_$p"; done
-if council_check_deny_used "$FNS" 2>/dev/null; then
-  ok "every claude planner and the arbiter pass \$COUNCIL_DENY to their CLI"
-else
-  bad "a claude function drops \$COUNCIL_DENY: it can read the run directory, and"
-  bad "with it which planner wrote which plan. Add \"\$COUNCIL_DENY\" to its"
-  bad "--disallowedTools, as config/council.conf does."
+# Three requirements, each reported on its own line. A text check of the
+# config: it reads each function's definition, not the process it starts.
+council_check_deny_used "$FNS" 2>/dev/null
+# A function whose definition was not found was checked for nothing, so the
+# ok lines below must not speak for it.
+SCOPE="every claude planner and the arbiter"
+if [ -n "${COUNCIL_CHECK_UNKNOWN-}" ]; then
+  bad "could not tell which definition runs, or could not read it, for:$COUNCIL_CHECK_UNKNOWN,"
+  bad "so none of the three requirements below was checked for it. In $COUNCIL_CONFIG_USED:"
+  # A here-document, not a pipe, so that bad counts in this shell.
+  while IFS= read -r _line; do bad "$_line"; done <<EOF
+$(council_unknown_reasons)
+EOF
+  SCOPE="every claude function whose definition was read"
 fi
+# A definition above the line that sources the plugin's config, which
+# defines the function again, never runs. The plugin's runs, and the lines
+# below speak for that one.
+if [ -n "${COUNCIL_CHECK_SHADOWED-}" ]; then
+  for _sd in $COUNCIL_CHECK_SHADOWED; do
+    _sd_rest=${_sd#*:}
+    bad "${_sd%%:*} is defined at line ${_sd_rest%%:*} of $COUNCIL_CONFIG_USED and defined again by"
+    bad "the plugin's config/council.conf, sourced at line ${_sd_rest#*:}, so the first never runs."
+  done
+  bad "Every phase refuses this. Move each such definition below that line, or delete it."
+fi
+if [ -z "${COUNCIL_CHECK_NODENY-}" ]; then
+  ok "$SCOPE passes \$COUNCIL_DENY to its CLI"
+else
+  bad "these drop \$COUNCIL_DENY:$COUNCIL_CHECK_NODENY. It is the rule that keeps a"
+  bad "seat out of the run directory, which says who wrote which plan. Add \"\$COUNCIL_DENY\""
+  bad "and \"\$COUNCIL_DENY2\" to its --disallowedTools, as config/council.conf does."
+fi
+if [ -z "${COUNCIL_CHECK_NOFLAGS-}" ]; then
+  ok "$SCOPE calls \$(council_seat_flags)"
+else
+  bad "these do not call \$(council_seat_flags) unquoted:$COUNCIL_CHECK_NOFLAGS. Without"
+  bad "it a session loads the host's settings, hooks and connector tools; quoted, the"
+  bad "CLI refuses the call. Put \$(council_seat_flags), unquoted, on its claude command line."
+fi
+if [ -z "${COUNCIL_CHECK_NOBASH-}" ]; then
+  ok "$SCOPE names Bash in its --disallowedTools"
+else
+  bad "these do not name Bash in their --disallowedTools:$COUNCIL_CHECK_NOBASH."
+  bad "Add Bash there, as config/council.conf does."
+fi
+note "the three lines above are a text check of the config, not of the process."
 if [ -n "${COUNCIL_DENY_UNCOVERED:-}" ]; then
   note "the deny rule is a Claude Code permission rule and cannot reach:$COUNCIL_DENY_UNCOVERED"
   note "with one of those as a planner, the attack phase's blindness rests on the"
