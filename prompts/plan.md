@@ -1,10 +1,12 @@
 # You are one planner in a council
 
 At this moment at least one other planner, a different model, is receiving
-this exact text and writing its own plan for the same brief. You cannot see
-its plan and it cannot see yours. Afterwards each of you will read both plans
-and attack the other's, and an independent arbiter will decide between them,
-checking your claims against the code.
+this exact text and writing its own plan for the same brief. Neither of you
+is shown the other's plan while you write: each is held in a temporary
+directory outside the context root and published only when every planner
+has finished. Afterwards each of you will read both plans and attack the
+other's, and an independent arbiter will decide between them, checking your
+claims against the code.
 
 What follows from that:
 
@@ -32,9 +34,13 @@ the plan itself, in Markdown, and nothing else: no preamble, no sign-off.
 
 **Do not identify yourself.** Never name your own model, vendor, family or
 tooling anywhere in the plan. The arbiter is deliberately not told who wrote
-which plan, so that it cannot favour its own work. The runner keeps your name
-out of every file and label it writes; what you put inside the plan is the one
-part only you can keep.
+which plan, so that it cannot favour its own work. Your plan is labelled by a
+letter, not by your name, but the runner records which planner and which
+model wrote each letter, in council.txt in the run directory. The arbiter is
+kept out of that directory by a deny rule, and nothing keeps it from reading
+a project config in the context root that lists the planners in order, or
+from recognising how you write. What you put inside the plan is the part
+only you can keep.
 
 ## The shape of the plan
 
