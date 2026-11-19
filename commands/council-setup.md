@@ -328,7 +328,11 @@ Every other setting keeps `${VAR:-default}`.
 If the chosen planner set needs a function the plugin does not ship, write it
 into this file above the `.` line, keeping the contract in
 `config/council.conf` exactly: prompt on stdin, answer into `$1`, read-only,
-and `"$COUNCIL_DENY"` passed to the CLI.
+and `"$COUNCIL_DENY"` passed to the CLI. A function that drives `claude` must
+also call `$(council_seat_flags)`, unquoted, on its command line, as the
+shipped ones do: without it the function loads the host's settings, hooks and
+connector tools, and answers a different question from the seats the plugin
+ships.
 
 Then run `council-doctor.sh --root <root> --no-model-check` and show the
 result. It must load the new config and report the chosen planners. Fix

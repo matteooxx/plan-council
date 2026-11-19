@@ -100,11 +100,33 @@ COUNCIL_DENY2=$(council_deny_all_runs "$ROOT")
 COUNCIL_PHASE=assign
 council_assert_not_root "$ROOT" "$COUNCIL_DENY" "$COUNCIL_DENY2"
 export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
-# A warning here and deliberately so: the assigner is handed the plan and
-# the roster in its own prompt and no attribution is at stake, so a missing
-# rule costs nothing. The phases where it does cost refuse to start.
-council_check_deny_used arbiter \
-  || council_say "nothing here depends on that rule, so this run continues; the review phases would have refused to start."
+# Two different questions. A missing deny rule is about attribution: the
+# assigner is handed the plan and the roster in its own prompt and no
+# attribution is at stake, so that alone is a warning and the run continues;
+# the phases where it does cost refuse to start. A missing $(council_seat_flags)
+# or a missing Bash name is about what the session can do, and that matters
+# here as anywhere: the assigner reads a plan and writes a table, and a session
+# that can run commands or that loads the host's settings, hooks and connector
+# tools is not the seat the plugin ships. So those stop this run too. An
+# arbiter whose definition could not be read stops it as well: nothing is
+# known about it, capability included, so there is no cause to split on (see
+# council_require_deny_used in lib.sh). An arbiter written above the line that
+# sources the plugin's config, which defines it again, stops it too: that
+# definition never runs, which is neither attribution nor capability but the
+# command line its author wrote not being the one that runs, and no phase
+# continues on that (see council_shadowed_message in lib.sh).
+if ! council_check_deny_used arbiter; then
+  if [ -n "$COUNCIL_CHECK_UNKNOWN" ]; then
+    council_die "$(council_unread_message)"
+  fi
+  if [ -n "$COUNCIL_CHECK_SHADOWED" ]; then
+    council_die "$(council_shadowed_message)"
+  fi
+  if [ -n "$COUNCIL_CHECK_NOFLAGS$COUNCIL_CHECK_NOBASH" ]; then
+    council_die "the arbiter, which drafts the assignment, does not carry what every seat must: put \$(council_seat_flags), unquoted, on its claude command line and Bash in its --disallowedTools, as config/council.conf does. The assignment does not depend on attribution, but it does depend on what the session can do."
+  fi
+  council_say "the deny rule is about attribution and nothing here depends on it, so this run continues; the review phases would have refused to start."
+fi
 council_say "assigning tasks (assigner: the configured arbiter, from $ROOT, effort $COUNCIL_ASSIGN_EFFORT)"
 council_run_parallel "$ROOT" "$STAGE" "assign:arbiter"
 STATUS=$?
