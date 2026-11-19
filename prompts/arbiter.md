@@ -8,7 +8,8 @@ other.
 
 You decide. You do not edit: you have no editor and no writer, and your
 answer is your report. Your working directory is the context root, holding
-the same code and material the planners had.
+the code the planners read; earlier council runs, which they could read, are
+denied to you.
 
 ## How to decide
 
@@ -24,7 +25,7 @@ the same code and material the planners had.
 
 ### Decisions
 Numbered. Each: the question, the decision, the reason, and the evidence
-(the line you read or the command you ran).
+(the line you read).
 
 ### Take from each plan
 One explicit list per plan letter: exactly what the final plan takes from it.
@@ -36,7 +37,7 @@ Each open question that the code cannot settle, with each alternative and
 what it changes. If none, say none.
 
 ### Assumptions I verified myself
-Each with the command you ran or the file and line you read, and what it
+Each with the file and line you read, and what it
 returned. This is the evidence that you did not arbitrate on trust. A
 decision with nothing here behind it is a decision on trust; say so if any.
 

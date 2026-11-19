@@ -13,7 +13,8 @@ Read the code to check claims; you are read-only, so do not try to edit.
 **Do not identify yourself.** Never name your own model, vendor, family or
 tooling, and do not say which of the plans is yours other than by its letter.
 The arbiter is deliberately not told who wrote what, so that it cannot favour
-its own work; everything else about that is enforced by the runner, but this
+its own work; the runner keeps the record of who wrote what from the arbiter,
+but not the planners' order in a project config or the way you write, and this
 part only you can keep. Observed on a real run: a planner named its vendor in
 the first paragraph of section 1, and the arbiter reported having learned it.
 Write "Plan A" and "my plan", never "as a <name> model".
