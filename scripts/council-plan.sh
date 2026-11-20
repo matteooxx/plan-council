@@ -3,6 +3,7 @@
 # at the same time and writes its own plan without seeing the others.
 #
 # Usage: council-plan.sh BRIEF [--root DIR] [--out DIR] [--no-model-check]
+#                        [--no-seat-check]
 #   BRIEF       a Markdown file describing what to plan
 #   --root DIR  the context root: the directory holding the code AND the
 #               working material around it (notes, earlier plans). Every
@@ -11,23 +12,28 @@
 #   --out DIR   where the run is published. Default: ROOT/.council/<timestamp>
 #   --no-model-check  under a mode, skip asking each Claude model ID in play
 #               for one word before the planners run (the identity gate)
+#   --no-seat-check   skip calling each claude planner once, before the
+#               planners run, to read the CLI's record of a refused read of
+#               the run directory (the seat check)
 set -u
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P) || exit 1
 PLUGIN_ROOT=$(dirname "$SCRIPT_DIR")
 . "$SCRIPT_DIR/lib.sh"
 
-usage() { sed -n '2,13p' "$SCRIPT_DIR/council-plan.sh" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,17p' "$SCRIPT_DIR/council-plan.sh" | sed 's/^# \{0,1\}//'; }
 
 BRIEF=""
 ROOT="."
 OUT=""
 MODEL_CHECK=1
+SEAT_CHECK=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) [ $# -ge 2 ] || council_die "--root needs a directory"; ROOT=$2; shift 2 ;;
     --out)  [ $# -ge 2 ] || council_die "--out needs a directory"; OUT=$2; shift 2 ;;
     --no-model-check) MODEL_CHECK=0; shift ;;
+    --no-seat-check) SEAT_CHECK=0; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) council_die "unknown option: $1" ;;
     *) [ -z "$BRIEF" ] || council_die "only one brief, got '$BRIEF' and '$1'"; BRIEF=$1; shift ;;
@@ -52,7 +58,7 @@ OUT=$(council_absdir "$OUT") || council_die "cannot resolve $OUT"
 [ -z "$(ls -A "$OUT")" ] || council_die "output directory is not empty: $OUT"
 
 STAGE=$(council_stage "$ROOT")
-trap 'rm -rf "$STAGE"' EXIT
+trap 'council_seat_unplant; rm -rf "$STAGE"' EXIT
 trap 'exit 130' INT TERM
 
 # One prompt, built once. Every planner gets these exact bytes; the output
@@ -115,6 +121,18 @@ COUNCIL_PHASE=plan
 council_assert_not_root "$ROOT" "$COUNCIL_DENY" "$COUNCIL_DENY2"
 export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
 council_require_deny_used "$FNS"
+
+# The seat check (council_seat_check in lib.sh): the text check above read
+# the config; this calls each claude planner once and reads the CLI's own
+# record of a read of the run directory, which must show the read refused.
+# The run directory is empty here, so the file it asks for is planted, and it
+# is removed again before any planner runs; the check below proves that.
+if [ "$SEAT_CHECK" -eq 1 ]; then
+  council_seat_check "$ROOT" "$OUT" "$STAGE"
+else
+  council_seat_skip
+fi
+[ -z "$(ls -A "$OUT")" ] || council_die "the run directory $OUT is not empty after the seat check, so the planners would start beside a file they were not meant to see. This is a bug in plan-council. No planner has been run."
 
 # The identity gate. Under a mode, each distinct Claude model ID in play is
 # asked once for one word, before any planner is paid for, and the run stops
@@ -313,6 +331,9 @@ cp "$BRIEF_ABS" "$OUT/brief.md"
       printf 'modelcheck=skipped\n'
       printf 'modelcheck.from=%s\n' "--no-model-check was given, so no model ID in play was asked anything before the planners started" ;;
   esac
+  # The seat check's outcome (council_seat_record in lib.sh says what each
+  # line means, and what a pass does not show).
+  council_seat_record plan
 } > "$OUT/council.txt"
 # Which model each planner ran, as far as plan-council can know it. Every
 # model.<letter>= line has a model.<letter>.from= line saying where the value

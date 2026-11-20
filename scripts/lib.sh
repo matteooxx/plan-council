@@ -632,7 +632,9 @@ council_check_planners() {
 # three requirements. Whether such a seat should be refused is a decision,
 # not made here.
 #
-# Sets COUNCIL_DENY_UNCOVERED to the functions the rule cannot reach.
+# Sets COUNCIL_DENY_UNCOVERED to the functions the rule cannot reach, and
+# COUNCIL_CHECK_CLAUDE to the ones it judged to drive claude, whose bodies it
+# read and found the word in: those are the seats council_seat_check probes.
 # Returns non-zero when a claude-driven function drops the rule, does not
 # call $(council_seat_flags), or does not name Bash in its --disallowedTools,
 # each a straightforward mistake in the config; when it cannot tell which
@@ -794,9 +796,27 @@ council_function_body() {
 # next line; inside a command substitution, case and esac are counted as
 # words wherever they appear, and nothing else about the case is read;
 # "esac" as the first pattern of a case item followed by a blank;
-# bash-only syntax such as [[ ]] and $'...', read as sh. What these do to
-# the result is not the same in every case: the comparison with bash in
-# scripts/tests/definitions.sh shows the ones that are known.
+# bash-only syntax such as [[ ]] and $'...', read as sh; and a "." or
+# "source" after the word "command", as in command . FILE, which it does not
+# take as a "." or "source" at all. What these do to the result is not the
+# same in every case. Four configs are known that it passes while the shell
+# runs another file's seat: a good definition, then x=$(echo case), then a
+# "." of another file; the same with x=$(echo "esac" case); the plugin's
+# source line, then command . of another file; and a good definition, then
+# alias src=. and src of another file. The first three are listed as known
+# open in scripts/tests/definitions.sh, where the comparison with bash shows
+# them. The comparison cannot show the fourth: bash run as bash does not
+# expand the alias and keeps the good definition, as the scan says, while sh
+# and dash expand it and run the other file's seat. That fixture is kept out
+# of the comparison and pinned there with a stub run under sh and dash.
+#
+# FROZEN. The logic of this function is not to be changed, by an
+# arbitration's decision, until an oracle exists that runs configs under sh
+# and under dash, and that oracle gives different answers on the alias
+# fixture above under bash and under sh. Until then a change here can be
+# compared only with bash, which agrees with the scan on that fixture, so it
+# could not be shown to fix anything there. Comments may change; the awk
+# program may not.
 council_definition_scan() {
   _cds_root=${COUNCIL_PLUGIN_ROOT-} _cds_ok=${3-0} \
   awk -v fn="$1" '
@@ -1367,7 +1387,9 @@ council_check_deny_used() {
   _unknown=""
   _unknown_at=""
   _shadowed=""
+  _claude_fns=""
   COUNCIL_DENY_UNCOVERED=""
+  COUNCIL_CHECK_CLAUDE=""
   COUNCIL_CHECK_NODENY=""
   COUNCIL_CHECK_NOFLAGS=""
   COUNCIL_CHECK_NOBASH=""
@@ -1437,6 +1459,7 @@ council_check_deny_used() {
     fi
     case "$_body" in
       *claude*)
+        _claude_fns="$_claude_fns $_fn"
         # The deny and flags tests read the body without its whole-line
         # comments, as council_body_denies_bash does: a commented-out
         # occurrence passed both before.
@@ -1519,6 +1542,7 @@ council_check_deny_used() {
   COUNCIL_CHECK_NOFLAGS="$_noflags$_quoted"
   COUNCIL_CHECK_NOBASH="$_nobash$_nobash_bare"
   COUNCIL_CHECK_UNKNOWN=$_unknown
+  COUNCIL_CHECK_CLAUDE=$_claude_fns
   if [ "$_cdu_rc" -ne 0 ]; then
     council_say "note: this is a text check. It reads each function's definition in the config file, not the process the function starts."
   fi
@@ -1598,9 +1622,28 @@ council_budget_flags() {
 # about the CLI's future, not on a measurement: if a release made --tools add
 # to the default set instead of replacing it, the names would be the only thing
 # left keeping those tools out.
+#
+# One switch, and only one caller sets it: council_seat_check, inside the
+# subshell that calls a seat for the per-run seat check, adds
+# --output-format json so that the CLI writes its record of the call. Nothing
+# else may ever see it. An answer is accepted on its size alone
+# (council_answer_ok), so a switch left on would put JSON where a plan belongs
+# and no exit code would change. It is therefore tested for the exact value 1,
+# set only inside that subshell, which ends with it, and cleared below when
+# this file is sourced, so that a value exported by the environment cannot
+# turn it on. Its name is kept out of the COUNCIL_ namespace so that no
+# setting can be mistaken for it. council_probe_call and the deny canary in
+# council-detect.sh expand this function too; neither runs inside that
+# subshell, so neither ever sees the switch, and council_probe_call, which
+# asks for JSON on its own, does not get the flag twice.
 council_seat_flags() {
   printf -- '--restricted --tools Read,Glob,Grep --setting-sources project,local --strict-mcp-config --disable-slash-commands'
+  if [ "${_council_seat_json-}" = 1 ]; then
+    printf -- ' --output-format json'
+  fi
+  return 0
 }
+unset _council_seat_json
 
 # The Nth letter, 1-based.
 council_letter() {
@@ -1832,6 +1875,327 @@ council_billed_ids() {
       for (k = 1; k <= n; k++) print ids[k]
     }' | sort -u | tr '\n' ' ')
   printf '%s\n' "${_cbi% }"
+}
+
+# council_denials_read -- reads, on stdin, the stdout of one seat call made
+# with --output-format json, and prints what the claude CLI recorded in its
+# permission_denials field, the CLI's own list of the tool calls it refused:
+#   !         the stdout cannot be read (see below);
+#   missing   it holds no permission_denials field;
+#   notarray  the field is there and is not an array;
+#   R N       the field is an array of N objects, R of which name "Read" as
+#             their tool_name.
+# Only "R N" with R at least 1 is a refused read. Everything else is not, and
+# council_seat_check refuses it.
+#
+# The same reader as council_billed_ids, in the same structural style, for
+# the same reason: this is JSON, so it follows string state (with backslash
+# escapes) and brace and bracket depth, across lines and whatever the
+# spacing. It reads the JSON object stdout opens with, after any whitespace,
+# and stops where that object closes: whatever follows it is ignored and can
+# add nothing. "permission_denials" counts only as a key of that object
+# itself, never of one nested in it, and may appear there only once. An entry
+# is an object directly inside that array, and its tool_name counts only as
+# one of its own keys, at most once, whose value is the string "Read"
+# exactly, compared as raw text: an escape that spells it another way is not
+# "Read". Output that does not open with an object (empty output included),
+# whose first object never closes, closes on the wrong bracket or breaks a
+# string across lines, that names permission_denials twice among its own keys
+# or tool_name twice in one entry, or that spells a key at either of those
+# two levels with a backslash, gives "!".
+council_denials_read() {
+  LC_ALL=C awk '
+    BEGIN { d = 0; st = ""; ins = 0; esc = 0; started = 0; closed = 0; bad = 0
+            npd = 0; pdarr = 0; inpd = 0; inent = 0; nent = 0; nread = 0
+            key = ""; havestr = 0; colon = 0; capt = 0; tn = 0; tnread = 0 }
+    {
+      if (NR > 1 && ins) bad = 1
+      line = $0
+      len = length(line)
+      for (i = 1; i <= len; i++) {
+        c = substr(line, i, 1)
+        if (ins) {
+          if (esc) esc = 0
+          else if (c == "\\") esc = 1
+          else if (c == "\"") {
+            ins = 0; havestr = 1
+            if (capt) { capt = 0; if (s == "Read") tnread = 1 }
+            continue
+          }
+          s = s c
+          continue
+        }
+        if (c == " " || c == "\t" || c == "\r") continue
+        if (closed) exit
+        if (!started) {
+          if (c != "{") { bad = 1; exit }
+          started = 1
+        }
+        if (colon) {
+          colon = 0
+          if (d == 1 && key == "permission_denials") {
+            npd++
+            if (c == "[") { pdarr = 1; inpd = 1 }
+          } else if (inent && d == 3 && key == "tool_name") {
+            tn++
+            if (c == "\"") capt = 1
+          }
+        }
+        if (havestr) {
+          havestr = 0
+          if (c == ":") {
+            key = s; colon = 1
+            if (index(key, "\\") && (d == 1 || (inent && d == 3))) { bad = 1; exit }
+            continue
+          }
+        }
+        if (c == "\"") { ins = 1; s = ""; continue }
+        if (c == "{" || c == "[") {
+          if (inpd && d == 2 && c == "{") { inent = 1; nent++; tn = 0; tnread = 0 }
+          st = st c; d++; continue
+        }
+        if (c == "}" || c == "]") {
+          if (d == 0) { bad = 1; exit }
+          o = substr(st, d, 1)
+          if ((c == "}" && o != "{") || (c == "]" && o != "[")) { bad = 1; exit }
+          st = substr(st, 1, d - 1)
+          d--
+          if (inent && d == 2) {
+            inent = 0
+            if (tn > 1) { bad = 1; exit }
+            if (tn == 1 && tnread) nread++
+          }
+          if (inpd && d == 1) inpd = 0
+          if (d == 0) closed = 1
+        }
+      }
+    }
+    END {
+      if (bad || !closed || npd > 1) { print "!"; exit }
+      if (npd == 0) { print "missing"; exit }
+      if (!pdarr) { print "notarray"; exit }
+      print nread " " nent
+    }'
+}
+
+# The file council_seat_check plants, while it is planted, so that an exit
+# trap can remove it (council_seat_unplant). Empty otherwise.
+_council_planted=""
+
+# Removes the file council_seat_check planted, if it is still there. Called by
+# council_seat_check itself before any seat of the phase runs, and from the
+# EXIT traps of council-plan.sh and council-review.sh, so that an interrupted
+# or refused check does not leave it in the run directory.
+council_seat_unplant() {
+  if [ -n "${_council_planted-}" ]; then
+    rm -f "$_council_planted"
+    _council_planted=""
+  fi
+  return 0
+}
+
+# council_seat_check ROOT RUN STAGE -- the per-run seat check.
+#
+# Every other check in this plugin reads either a text file or a model's
+# words. This one reads a record the CLI wrote. It runs after
+# council_require_deny_used has passed, which is a text check of the config,
+# and before any seat of the phase is paid for.
+#
+# For each function council_check_deny_used judged to drive claude
+# (COUNCIL_CHECK_CLAUDE), in the phase now running (COUNCIL_PHASE, so the
+# seat runs at that phase's effort, on whatever model it is configured with):
+#   - a file with a neutral name is planted in the run directory RUN, holding
+#     a marker that appears nowhere in the prompt. Never council.txt: the deny
+#     canary learned that a name like "secret" can make a model decline a read
+#     on its own judgement, which is not the CLI refusing it;
+#   - the seat is called by name, from ROOT, with the probe prompt on stdin,
+#     as council_run_parallel calls it, in a subshell that sets the switch in
+#     council_seat_flags, so the CLI writes its JSON record into the seat's
+#     answer file. The switch ends with that subshell;
+#   - the planted file is deleted before any seat of the phase runs;
+#   - nothing of the probe is written to STAGE/*.log, which council_keep_logs
+#     copies into the run directory: it all goes to STAGE/seatcheck, which is
+#     removed here.
+# One call per seat per phase.
+#
+# A seat passes only when the CLI's record names a refused Read: an entry of
+# permission_denials naming Read, read by council_denials_read, with the
+# marker nowhere in what the seat printed and a zero exit status. Anything
+# else refuses the run, there is nothing to walk past it, and the message
+# names the cause: the marker appeared (the read was allowed); the call
+# exited non-zero; what it printed is not a JSON object; or it is one, and it
+# holds no such record.
+#
+# What a pass shows, and what it does not. A Read entry proves only that the
+# CLI refused a read: it does not say which rule did. Measured with the
+# shipped arbiter and no deny rule at all: a read of an absolute path OUTSIDE
+# the context root also leaves one Read entry, refused by --restricted. A
+# read INSIDE the root is not refused by --restricted (see the measurements
+# above council_seat_flags), so there the refusal did not come from
+# --restricted alone, though the record does not say which rule refused it,
+# and a deny rule in the project's own settings would leave the same entry.
+# So the record says whether RUN was inside ROOT, and for a run
+# directory outside it says that this does not show a deny rule did it. It
+# never says the deny rule is in force, and nothing here is verified beyond
+# one call: it shows that a read of the run directory through this seat was
+# refused by the CLI, in a separate process, just before the run.
+#
+# Seats in COUNCIL_DENY_UNCOVERED, whose definition the text check did not
+# find "claude" in, are not probed: neither the deny rule nor this check
+# reaches them, as the comment above council_check_deny_used says. The
+# record lists them.
+#
+# Sets COUNCIL_SEATCHECK to passed, or none when no seat was probed, and
+# COUNCIL_SEATCHECK_SEATS, COUNCIL_SEATCHECK_UNPROBED and
+# COUNCIL_SEATCHECK_TARGET (inside or outside) for council_seat_record. Dies
+# on any other outcome.
+council_seat_check() {
+  _sc_root=$1
+  _sc_run=$2
+  _sc_stage=$3
+  COUNCIL_SEATCHECK=""
+  COUNCIL_SEATCHECK_SEATS=""
+  COUNCIL_SEATCHECK_UNPROBED=${COUNCIL_DENY_UNCOVERED-}
+  case "$_sc_run/" in
+    "$_sc_root"/*) COUNCIL_SEATCHECK_TARGET=inside ;;
+    *) COUNCIL_SEATCHECK_TARGET=outside ;;
+  esac
+  _sc_fns=""
+  for _sc_fn in ${COUNCIL_CHECK_CLAUDE-}; do
+    case " $_sc_fns " in
+      *" $_sc_fn "*) ;;
+      *) _sc_fns="$_sc_fns $_sc_fn" ;;
+    esac
+  done
+  if [ -z "$_sc_fns" ]; then
+    COUNCIL_SEATCHECK=none
+    council_say "seat check: no seat of this phase was judged by the text check to drive claude, so none was probed${COUNCIL_SEATCHECK_UNPROBED:+; not probed:$COUNCIL_SEATCHECK_UNPROBED}."
+    return 0
+  fi
+  _sc_count=0
+  for _sc_fn in $_sc_fns; do _sc_count=$((_sc_count + 1)); done
+
+  _sc_dir="$_sc_stage/seatcheck"
+  rm -rf "$_sc_dir"
+  mkdir "$_sc_dir" || council_die "seat check: cannot create $_sc_dir. Nothing has been run."
+  _sc_name="notes-$$.txt"
+  _sc_file="$_sc_run/$_sc_name"
+  [ ! -e "$_sc_file" ] || council_die "seat check: $_sc_file already exists, and the check plants a file under that name. Nothing has been run."
+  _sc_mark="M$(date +%s)P$$R$(awk 'BEGIN { srand(); printf "%d", rand() * 1000000000 }')Z"
+  _sc_path=$(council_cli_path "$_sc_file")
+  printf 'Use the Read tool, once, on the file at this absolute path, and reply with the first line of that file exactly as it is written:\n\n%s\n\nIf the read is refused or fails, reply with the single word BLOCKED. Do not use any other tool and do not read any other file.\n' "$_sc_path" > "$_sc_dir/prompt"
+  if grep -q "$_sc_mark" "$_sc_dir/prompt"; then
+    council_die "seat check: the marker appears in the probe prompt, so the check could not tell a read from an echo. This is a bug in plan-council. Nothing has been run."
+  fi
+
+  council_say "seat check: before any seat of this phase is paid for, each claude seat is called once, by name, from the context root, and asked to read a file planted in the run directory; the CLI's own record of that call must show the read refused. $_sc_count call(s), each a full CLI session billed as such."
+  _council_planted=$_sc_file
+  printf '%s\n' "$_sc_mark" > "$_sc_file" || council_die "seat check: cannot write $_sc_file. Nothing has been run."
+  _sc_n=0
+  for _sc_fn in $_sc_fns; do
+    _sc_n=$((_sc_n + 1))
+    (
+      _council_seat_json=1
+      cd "$_sc_root" || exit 97
+      "$_sc_fn" "$_sc_dir/answer-$_sc_n"
+    ) < "$_sc_dir/prompt" > "$_sc_dir/stdout-$_sc_n" 2> "$_sc_dir/stderr-$_sc_n"
+    eval "_sc_rc_$_sc_n=\$?"
+  done
+  council_seat_unplant
+
+  _sc_fail=""
+  _sc_n=0
+  for _sc_fn in $_sc_fns; do
+    _sc_n=$((_sc_n + 1))
+    eval "_sc_rc=\$_sc_rc_$_sc_n"
+    _sc_out=$(cat "$_sc_dir/answer-$_sc_n" 2>/dev/null)
+    _sc_rep=$(printf '%s\n' "$_sc_out" | council_denials_read)
+    _sc_ex=$(printf '%s' "$_sc_out" | tr '\n' ' ' | cut -c1-200)
+    if cat "$_sc_dir/answer-$_sc_n" "$_sc_dir/stdout-$_sc_n" "$_sc_dir/stderr-$_sc_n" 2>/dev/null | grep -q "$_sc_mark"; then
+      _sc_fail="$_sc_fail $_sc_fn: the read was allowed: the marker held only by the planted file appears in what the seat printed, so the seat read the run directory;"
+    elif [ "$_sc_rc" -ne 0 ]; then
+      _sc_fail="$_sc_fail $_sc_fn: the call exited with status $_sc_rc, so what it printed is not a record of a completed call (first 200 chars: $_sc_ex);"
+    else
+      case "$_sc_rep" in
+        "!")
+          _sc_fail="$_sc_fail $_sc_fn: what the seat wrote is not one complete JSON object this check can read (it is empty, does not open with an object, never closes or is malformed, names permission_denials twice, names tool_name twice in one entry, or spells such a key with a backslash), so there is no record of the call to read (first 200 chars: $_sc_ex);" ;;
+        missing)
+          _sc_fail="$_sc_fail $_sc_fn: no record: the JSON holds no permission_denials field, and the marker does not appear;" ;;
+        notarray)
+          _sc_fail="$_sc_fail $_sc_fn: no record: permission_denials is not an array, and the marker does not appear;" ;;
+        "0 0")
+          _sc_fail="$_sc_fail $_sc_fn: no record: permission_denials is empty, and the marker does not appear, so whether a read was even attempted cannot be told;" ;;
+        "0 "*)
+          _sc_fail="$_sc_fail $_sc_fn: no record: permission_denials holds ${_sc_rep#0 } object(s) and none names Read, and the marker does not appear, so whether a read was even attempted cannot be told;" ;;
+        [1-9]*" "*)
+          COUNCIL_SEATCHECK_SEATS="$COUNCIL_SEATCHECK_SEATS $_sc_fn" ;;
+        *)
+          _sc_fail="$_sc_fail $_sc_fn: the record could not be read (reader returned '$_sc_rep');" ;;
+      esac
+    fi
+  done
+  rm -rf "$_sc_dir"
+
+  if [ -n "$_sc_fail" ]; then
+    council_die "seat check refused the run. The text check of the config had passed for these seats; this check reads the CLI's own record of one call per seat, and it did not show a refused read of the run directory for:${_sc_fail%;}. A seat whose read of the run directory is not refused can read what a run writes there, council.txt included, which says which planner wrote which plan. The seat check made $_sc_count call(s), and no seat of this phase has been run after them."
+  fi
+  COUNCIL_SEATCHECK=passed
+  council_say "seat check: a read of the run directory through each of these seats,$COUNCIL_SEATCHECK_SEATS, was refused by the CLI (its permission_denials names Read), in a separate process, just before the run. $(council_seat_target_sentence)${COUNCIL_SEATCHECK_UNPROBED:+ Not probed, since the text check found no claude in them:$COUNCIL_SEATCHECK_UNPROBED.}"
+  return 0
+}
+
+# The sentence that says what the refusal shows, given where the run
+# directory lies. Shared by the message and the record.
+council_seat_target_sentence() {
+  if [ "${COUNCIL_SEATCHECK_TARGET-}" = inside ]; then
+    printf '%s' "The run directory is inside the context root, where --restricted alone was measured not to refuse a read, so the refusal did not come from --restricted alone; the record does not say which rule refused it."
+  else
+    printf '%s' "The run directory is outside the context root, where --restricted alone refuses a read with no deny rule present (measured), so this does not show that a deny rule refused it."
+  fi
+}
+
+# council_seat_skip -- what council_seat_check sets, for a phase run with
+# --no-seat-check. The seats the check could not have reached are still
+# listed, so the record says the same about them either way.
+council_seat_skip() {
+  COUNCIL_SEATCHECK=skipped
+  COUNCIL_SEATCHECK_SEATS=""
+  COUNCIL_SEATCHECK_TARGET=""
+  COUNCIL_SEATCHECK_UNPROBED=${COUNCIL_DENY_UNCOVERED-}
+  council_say "seat check: skipped (--no-seat-check). No seat was asked to read the run directory before this phase; council.txt records that."
+}
+
+# council_seat_record PHASE -- prints the council.txt lines for the seat
+# check of PHASE, from what council_seat_check (or a skip) set.
+council_seat_record() {
+  printf 'seatcheck.%s=%s\n' "$1" "${COUNCIL_SEATCHECK-}"
+  case "${COUNCIL_SEATCHECK-}" in
+    passed)
+      printf 'seatcheck.%s.seats=%s\n' "$1" "${COUNCIL_SEATCHECK_SEATS# }"
+      printf 'seatcheck.%s.target=%s\n' "$1" "$COUNCIL_SEATCHECK_TARGET"
+      printf 'seatcheck.%s.from=%s\n' "$1" "a read of the run directory through each seat in seatcheck.$1.seats was refused by the CLI, in a separate process, just before the run: the seat was called once, by name, from the context root, and asked to read a file planted in the run directory, and the CLI's record of that call (permission_denials in its JSON output) named a refused Read, while the file's content appeared nowhere in what it printed. $(council_seat_target_sentence) One call per seat, not a record of the calls that followed it." ;;
+    none)
+      printf 'seatcheck.%s.from=%s\n' "$1" "no seat of this phase was judged by the text check to drive claude, so none was probed" ;;
+    skipped)
+      printf 'seatcheck.%s.from=%s\n' "$1" "--no-seat-check was given, so no seat was asked to read the run directory before this phase" ;;
+  esac
+  if [ -n "${COUNCIL_SEATCHECK_UNPROBED-}" ]; then
+    printf 'seatcheck.%s.unprobed=%s\n' "$1" "${COUNCIL_SEATCHECK_UNPROBED# }"
+    printf 'seatcheck.%s.unprobed.from=%s\n' "$1" "the text check did not find claude in these functions, so the deny rule cannot reach them and this check did not call them; whether they can read the run directory is not known"
+  fi
+  return 0
+}
+
+# council_seat_record_into MANIFEST PHASE -- replaces the seatcheck.PHASE
+# lines of MANIFEST with the current ones, as council-review.sh records
+# model.arbiter: a rerun replaces its own lines and adds no second set.
+council_seat_record_into() {
+  _sr_keep=$(grep -v -e "^seatcheck\\.$2=" -e "^seatcheck\\.$2\\." "$1")
+  [ "$?" -le 1 ] || council_die "cannot read $1 to record the seat check, so no seat of this phase was called."
+  {
+    [ -z "$_sr_keep" ] || printf '%s\n' "$_sr_keep"
+    council_seat_record "$2"
+  } > "$1.tmp" && mv "$1.tmp" "$1" || { rm -f "$1.tmp"; council_die "cannot record the seat check in $1, so no seat of this phase was called."; }
 }
 
 # Run one function per job in parallel, from the context root, feeding each
