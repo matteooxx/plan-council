@@ -896,9 +896,58 @@ agreeing. One run is not a track record.
   `claude`, or on Linux or macOS; and how often. The runs that did return
   were not counted, so three is a count with no denominator, not a rate, and
   nothing here says it is rare.
+  **Counted since, on 2026-11-20, on the same Windows machine under Cygwin.**
+  These counts are apart from the three runs above, which still have no
+  denominator, and none of them is a rate for real `claude` runs, or for
+  Linux or macOS.
+  - **A stand-in hangs the same way.** A stand-in, a 20-line script with no
+    plugin, no `claude` and no git that backgrounds two subshells in this
+    runner's shape around a fast child shell script, hung 3 times in 3614
+    iterations under `/usr/bin/dash` on that one machine, with the
+    fingerprint of the plugin's own hangs: the answers complete, the child
+    gone from `ps` and `ps -W`, its `/proc` entry still there, `wait` not
+    returning, `kill -CHLD` not waking it, and `/usr/bin/kill -f` ending it.
+  - **A trigger, not a cause.** In that stand-in, hangs were counted only
+    with the three redirections on the backgrounded compound: 2 in 2114
+    iterations with `wait` per pid (1500 and 614), and 1 in 1500 with a
+    plain `wait`, so changing the `wait` did not stop it. Without the
+    redirections, and with them moved inside the subshell through `exec` (a
+    neighbouring shape, not the one that ships), it hung 0 times in 1500
+    iterations each, which has about a 29% chance for each
+    (`e^(-1500*3/3614)`), and about 8% for the 3000 together
+    (`e^(-3000*3/3614)`), even if neither change did anything, taking the
+    stand-in's 3 in 3614 (one machine, a fast child) as its exact rate;
+    about 35% for each without taking that rate as exact
+    (`(3614/5114)^3`). Why the redirections on the compound go with the
+    hang is not known.
+  - **What ships from 0.5.1.** The runner redirects each seat's stdin,
+    stdout and stderr inside the seat's subshell, through `exec`, before its
+    `cd`, and does not start the seat if a redirection fails. That is not
+    the stand-in's text, so none of the stand-in's counts is a count of it.
+    The runner itself, sourced from `scripts/lib.sh` with two stand-in seats
+    that each run an external script, hung 0 times in 1500 iterations under
+    `/usr/bin/dash` on 2026-11-20, which has about a 29% chance even if the
+    move changed nothing, taking the stand-in's 3 in 3614 (one machine, a
+    fast child) as the exact rate, and about 35% without. It is not known to
+    prevent the hang, and what follows still applies.
+  - **bash, as a count and not as immunity.** The stand-in in its hanging
+    shape, under `/usr/bin/sh`, which is bash invoked as `sh` and so in
+    POSIX mode (the same binary as `/usr/bin/bash` on that machine), hung 0
+    times in 3000 iterations, which has about an 8% chance even if bash hangs
+    as often as dash, taking the stand-in's dash rate of 3 in 3614 (one
+    machine, a fast child) as exact, and about 16% without
+    (`(3614/6614)^3`). bash invoked as `bash` was never run in that loop.
+    One earlier bash iteration was open for about five minutes when it was
+    killed before its fingerprint was read, so it counts neither way.
+    Whether the hang happens under `sh` stays not known.
   **How to recognise it:** the run has printed a `started` line for each
   seat, no seat process (`claude`, `codex`) is left running under it, and no
   `done` or `FAILED` line follows.
+  The rest of what was seen varies, so do not require it: in two of three
+  hangs looked at closely the exited seat still had a `/proc/<pid>` entry,
+  and in the third, inside this plugin's own test suite on 2026-11-20, none
+  was found - though that suite sends the runner's stderr to `/dev/null`, so
+  the seats' pids were not known there and could not be looked up.
   **What to do, in this order:** before it starts any seat, every phase
   prints one line that begins `plan-council: staging directory` and ends
   with that directory's path (a review prints it twice, once per phase, with

@@ -2,7 +2,8 @@
 # Tests for the per-run seat check in ../lib.sh: the reader of the CLI's
 # permission_denials record (council_denials_read), the switch that makes a
 # seat write that record (council_seat_flags), the probe that calls each seat
-# (council_seat_check), and the scripts that run it before their seats.
+# (council_seat_check), the scripts that run it before their seats, and the
+# parallel runner's plumbing: prompt in, stdout and stderr out to their logs.
 #
 # Usage: sh scripts/tests/permission-denials.sh
 #        dash scripts/tests/permission-denials.sh
@@ -434,6 +435,77 @@ t_lacks "after: council_run_parallel, the arguments" "$STUB_LOG" "arg:--output-f
 council_probe_call claude-x > /dev/null 2>&1
 _t_got=$(grep -c -x 'arg:--output-format' "$STUB_LOG")
 t_same "after: council_probe_call, --output-format arguments" 1 "$_t_got"
+
+# ---------------------------------------------------------------------------
+echo "The runner's plumbing"
+
+# council_run_parallel gives each seat its prompt on stdin and keeps the
+# seat's stdout and stderr in stdout-<label>.log and stderr-<label>.log:
+# council-plan.sh reads stderr-<letter>.log, and the runner's FAILED line
+# tells the user to read stderr-<label>.log. The seat runs an external
+# script, as a real seat runs claude or codex. This section has its own root
+# and stage, so the run directories t_clean reads are not touched.
+T_PL="$T_TMP/plumb"
+mkdir -p "$T_PL/root" "$T_PL/stage" "$T_PL/stage-cd" "$T_PL/stage-noprompt"
+cat > "$T_PL/child.sh" <<'CHILD'
+#!/bin/sh
+IFS= read -r _line
+printf 'out:%s\n' "$_line"
+printf 'err:%s\n' "$_line" >&2
+{
+  printf 'pwd:%s\n' "$(pwd -P)"
+  _i=0
+  while [ "$_i" -lt 20 ]; do
+    printf 'line %s of an answer long enough to pass the size check\n' "$_i"
+    _i=$((_i + 1))
+  done
+} > "$1"
+CHILD
+chmod +x "$T_PL/child.sh"
+t_plumb_seat() { "$T_PL/child.sh" "$1"; }
+
+# Two seats, each with its own prompt.
+printf 'the prompt for P\n' > "$T_PL/stage/prompt-P.md"
+printf 'the prompt for Q\n' > "$T_PL/stage/prompt-Q.md"
+T_RC=0
+council_run_parallel "$T_PL/root" "$T_PL/stage" "P:t_plumb_seat" "Q:t_plumb_seat" \
+  > "$T_PL/runner.out" 2> "$T_PL/runner.err" < /dev/null || T_RC=$?
+t_same "plumbing: council_run_parallel returns" 0 "$T_RC"
+t_has "plumbing: stdout-P.log" "$T_PL/stage/stdout-P.log" "out:the prompt for P"
+t_has "plumbing: stderr-P.log" "$T_PL/stage/stderr-P.log" "err:the prompt for P"
+t_has "plumbing: stdout-Q.log" "$T_PL/stage/stdout-Q.log" "out:the prompt for Q"
+t_has "plumbing: stderr-Q.log" "$T_PL/stage/stderr-Q.log" "err:the prompt for Q"
+t_lacks "plumbing: stdout-P.log" "$T_PL/stage/stdout-P.log" "for Q"
+t_has "plumbing: answer-P.md, the seat's working directory" "$T_PL/stage/answer-P.md" "pwd:$T_PL/root"
+t_lacks "plumbing: the runner's own stdout" "$T_PL/runner.out" "out:"
+t_lacks "plumbing: the runner's own stderr" "$T_PL/runner.err" "err:the prompt"
+t_has "plumbing: the runner's own stderr" "$T_PL/runner.err" "P done ("
+
+# A root that does not exist: the failed cd must be written into the log
+# that the FAILED line names. The redirections must apply before the cd for
+# that, so this is the assertion that turns red if their order is swapped.
+printf 'the prompt for R\n' > "$T_PL/stage-cd/prompt-R.md"
+T_RC=0
+council_run_parallel "$T_PL/no-such-root" "$T_PL/stage-cd" "R:t_plumb_seat" \
+  > /dev/null 2> "$T_PL/runner-cd.err" < /dev/null || T_RC=$?
+if [ "$T_RC" -ne 0 ]; then _t_got=non-zero; else _t_got=0; fi
+t_same "failed cd: council_run_parallel returns" non-zero "$_t_got"
+t_has "failed cd: the runner's own stderr" "$T_PL/runner-cd.err" "R FAILED with exit code 97 (see stderr-R.log)"
+if [ -s "$T_PL/stage-cd/stderr-R.log" ]; then _t_got=non-empty; else _t_got="empty or absent"; fi
+t_same "failed cd: stderr-R.log, the file the FAILED line names" non-empty "$_t_got"
+if [ -e "$T_PL/stage-cd/answer-R.md" ]; then _t_got=present; else _t_got=absent; fi
+t_same "failed cd: answer-R.md, so the seat was not called" absent "$_t_got"
+
+# A prompt that does not exist: the redirection fails, and the seat must not
+# run on the runner's own stdin and stdout.
+T_RC=0
+council_run_parallel "$T_PL/root" "$T_PL/stage-noprompt" "S:t_plumb_seat" \
+  > "$T_PL/runner-np.out" 2> /dev/null < /dev/null || T_RC=$?
+if [ "$T_RC" -ne 0 ]; then _t_got=non-zero; else _t_got=0; fi
+t_same "missing prompt: council_run_parallel returns" non-zero "$_t_got"
+if [ -e "$T_PL/stage-noprompt/answer-S.md" ]; then _t_got=present; else _t_got=absent; fi
+t_same "missing prompt: answer-S.md, so the seat was not called" absent "$_t_got"
+t_lacks "missing prompt: the runner's own stdout" "$T_PL/runner-np.out" "out:"
 
 # ---------------------------------------------------------------------------
 echo "The scripts that run it"
