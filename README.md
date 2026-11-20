@@ -396,13 +396,26 @@ sh <plugin>/scripts/tests/definitions.sh
 dash <plugin>/scripts/tests/definitions.sh
 sh <plugin>/scripts/tests/permission-denials.sh
 dash <plugin>/scripts/tests/permission-denials.sh
+sh <plugin>/scripts/tests/canary.sh
+dash <plugin>/scripts/tests/canary.sh
 ```
 
-with `<plugin>` the plugin's directory. They write only to a temporary
+with `<plugin>` the plugin's directory.
+
+**They take a while, and `canary.sh` takes the longest.** Measured on Git
+Bash on Windows, 2026-11-20: `canary.sh` ran its 504 assertions in 1368
+seconds under `sh` and 1174 under `dash`, because each assertion runs
+`council-detect.sh`. The others are minutes. Nothing is wrong if one sits
+there for twenty minutes, and on another machine the numbers will differ.
+`canary.sh` takes `T_ONLY` to run one case and `T_SHELLS` to run one shell.
+
+They write only to a temporary
 directory, which they remove, and they run `council-assign.sh` and
 `council-doctor.sh` with a stand-in `claude` first on `PATH`, so no model is
 called; `permission-denials.sh` runs `council-plan.sh` and
-`council-review.sh` the same way. When `bash` is installed, one section of
+`council-review.sh` the same way, and `canary.sh` runs `council-detect.sh`
+with a stand-in `claude` that carries out the canary's probes itself and a
+stand-in `codex` that is not logged in. When `bash` is installed, one section of
 `definitions.sh` sources every test config in
 bash and compares the definition bash keeps with the one the check names;
 bash is used there only because it can say where a kept function was
@@ -465,7 +478,12 @@ Run directories: under the default layout `<root>/.council` holds a
 path git does not ignore is named once it holds files, by default as its
 directory (`?? runs/`); an earlier run there is named that way in a later
 run's prompts. This run's own directory is empty when the planning block is
-read, and git does not list an empty directory.
+read, and git does not list an empty directory. At review it holds files, so
+the review prompts name it the same way, and since 2026-11-20 the review no
+longer refuses a run directory git can see (see
+[Limitations](#limitations)). Committed between the two HEADs, its files are
+named one by one in `git diff --stat`. Names only: a prompt can say
+`?? runs/` or name `council.txt`, never what `council.txt` maps.
 
 Not a git work tree, no commits yet, a detached HEAD and `git` missing from
 `PATH` are all said in the block, in words; none of them stops a run.
@@ -695,7 +713,9 @@ called if a Claude planner would attack on a different model from the one it
 planned with.
 
 **What the setup's probe reports.** The summary `council-detect.sh` ends with
-holds `MODELS_AVAILABLE` and `MODELS_NOT_ANSWERING` (every probed ID that did
+holds `DENY_RULE_EFFECTIVE`, `OUTSIDE_ROOT_REFUSED` and `WRITE_REFUSED`, the
+canary's three verdicts (`yes`, `no`, `untested` or `unknown`), then
+`MODELS_AVAILABLE` and `MODELS_NOT_ANSWERING` (every probed ID that did
 not answer as itself, a `MISMATCH` included), `PROBED_ON`, and, when Codex is
 logged in and the probe runs, `CODEX_MODEL` and `CODEX_EFFORT` as its banner
 announced them, or `unknown`.
@@ -878,7 +898,11 @@ agreeing. One run is not a track record.
   directory holds `council.txt`, which maps each letter to its planner, and the
   config turns a planner name into an exact model in one more read. Each child
   is now given a deny rule covering that directory, and `council-detect.sh`
-  proves the rule works with a canary before you trust it. But the rule is a
+  probes the rule with a canary, route by route and tool by tool, each
+  route beside a control that must be reached: it prints
+  `DENY_RULE_EFFECTIVE=yes` only when every route was refused, and
+  `untested`, which is not a pass, when any control failed. It runs at setup
+  and by hand, not before each run. But the rule is a
   Claude Code permission rule: **it does not reach Codex**, whose read access is
   whatever that CLI grants. With Codex as a planner, nothing the plugin
   enforces keeps it out of the run directory during the attack phase, and no
@@ -895,6 +919,24 @@ agreeing. One run is not a track record.
   A deny rule written with an MSYS path (`/c/...`) matches nothing and blocks
   nothing, in silence — `cygpath -m` produces the form that is honoured, which
   is why `cygpath` is checked for on Windows.
+- **A run directory git can read is reviewed.** Until 2026-11-20
+  `/council-review` refused a run directory git tracked or did not ignore.
+  It went because a measurement showed it protected nothing: on that date a
+  `claude -p` seat that had a shell, with a deny rule on each of two run
+  directories, printed an ignored run's `council.txt` with
+  `cat .counci?/run1/council.txt` and a tracked run's with
+  `cat run?/run2/council.txt`, whether git could see the directory or not.
+  No seat the plugin ships has a shell. What does protect the attribution,
+  and what does not, is listed in the comment on `$COUNCIL_DENY` in
+  `config/council.conf`. Not protected, first: **an earlier run placed
+  outside `<root>/.council`**. No rule denies it and a read inside the root
+  is allowed, so a Claude seat can read its `council.txt`, and in a project
+  that runs the same planners in the same order that is this run's mapping:
+  keep runs in `<root>/.council`, or one run per `--out` parent. Then: the
+  run directory's name in the review prompts (see
+  [What the prompts say about your repository](#what-the-prompts-say-about-your-repository));
+  a Codex seat; a Claude seat that holds a shell all the same; and a run
+  directory you commit, whose `council.txt` then stays in your history.
 - **The arbiter still defaults to the same model as a planner.** It is never
   told which plan is whose, and it can no longer look the mapping up, but a
   model that may be judging its own work is a weaker check than one that
@@ -942,7 +984,9 @@ so its costs are counted calls, not bills:
   full CLI session billed as such; the run prints the `costUSD` figures it
   finds after each. `--no-model-check` skips it, at the price of not knowing
   what answered. The setup's probe in `council-detect.sh` costs separately: one
-  one-word call per candidate model, one for the guard check, and, when Codex
+  one-word call per candidate model, one for the guard check (a long one: it
+  carries every probe of the canary) and a second, short one when its write
+  probe needs its control, and, when Codex
   is logged in, one Codex call that runs at the model and reasoning effort of
   your own Codex config, which can be `xhigh`.
 - **The setup's probe holds for the reply it read, and `/council-doctor` is

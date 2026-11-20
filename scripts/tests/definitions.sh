@@ -556,8 +556,8 @@ CONF
 t_check "$F" arbiter
 t_var "a good definition, then a bad one" arbiter COUNCIL_CHECK_NODENY " arbiter"
 t_body "a good definition, then a bad one, from line 4" arbiter "$F" 4 "$(sed -n '4,6p' "$F")"
-# The canary's two-argument call still reads the first; it refuses
-# duplicates itself.
+# The two-argument call, which council_check_deny_used makes for the
+# plugin's own definition, still reads the first.
 t_body "a good definition, then a bad one, two arguments" arbiter "$F" "" "$(sed -n '1,3p' "$F")"
 t_body "a start line that is not a definition of it" arbiter "$F" 2 ""
 
@@ -692,8 +692,8 @@ t_same "one seat never runs, another unread: council_require_deny_used dies with
 
 echo "Byte for byte, the shapes read as before"
 
-# The reader as it was before the one-line rule. The canary in
-# council-detect.sh calls council_function_body with two arguments and must
+# The reader as it was before the one-line rule. council_check_deny_used
+# calls council_function_body with two arguments (the canary did too, until 2026-11-20) and must
 # get the same bytes for every shape both read. Compared as files with cmp:
 # a command substitution would drop trailing newlines and hide a difference.
 t_old_body() {
@@ -858,8 +858,8 @@ t_same "a seat defined above the source line: council_check_deny_used arbiter na
 
 echo "Shapes the reader reads wrongly, which the check no longer judges"
 
-# council_function_body still reads these wrongly; it is kept as it is for
-# the canary. The check compares the line where it stops with the line where
+# council_function_body still reads these wrongly; it is kept as it is (it
+# was kept for the canary until 2026-11-20). The check compares the line where it stops with the line where
 # the scan sees the body close, and reports the body unread. Each of these
 # passed the check before that comparison.
 #

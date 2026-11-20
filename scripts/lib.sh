@@ -622,8 +622,9 @@ council_check_planners() {
 # The rule is a Claude Code permission rule, so it reaches a function that runs
 # "claude" and nothing else. A function driving another CLI -- codex today --
 # gets no such rule: its read access is whatever that tool grants, so with it
-# as a planner the attack phase's blindness rests on the prompt, not on the
-# code. That is a real gap and it is named rather than hidden.
+# as a planner nothing the plugin enforces keeps it out of the run directory
+# during the attack phase, and no prompt asks it to stay out. That is a real
+# gap and it is named rather than hidden.
 #
 # A second gap follows from the same test. A body is judged only when the
 # word "claude" is in it, so a seat that delegates to a helper which runs
@@ -683,9 +684,10 @@ council_check_planners() {
 # one-line conditions and is followed by a "}" in column 1 that is not its
 # own (read too far); a line that meets them while its final "; }" sits
 # inside an open quote (read too little); and a "}" in column 1 inside the
-# body, in a heredoc or a multi-line string (read too little). It is kept as
-# it is because the canary in council-detect.sh calls it and depends on its
-# output. council_check_deny_used does not judge such a text: it compares
+# body, in a heredoc or a multi-line string (read too little). It was kept as
+# it is because the canary in council-detect.sh called it and depended on its
+# output; since 2026-11-20 the canary reads no config and no longer calls it,
+# and it is unchanged. council_check_deny_used does not judge such a text: it compares
 # the line where this function stops with the line where
 # council_definition_scan, which recognises quotes and heredocs, sees the
 # body close, and reports the body unread when they differ.
@@ -1420,7 +1422,7 @@ council_check_deny_used() {
       "def "*)
         # "def A Z": the definition at line A, whose body the scan saw close
         # at line Z (0 when it did not). The reader keeps its own line
-        # convention, which the canary relies on; when the text it returns
+        # convention, which the canary relied on until 2026-11-20; when the text it returns
         # does not end on line Z, the reader stopped somewhere the shell did
         # not -- a "}" in column 1 inside a heredoc, a one-line body whose
         # "; }" sits inside a quote, a close that is not its own -- and the
@@ -1472,16 +1474,15 @@ council_check_deny_used() {
         # of the check: planning sets COUNCIL_DENY2 to COUNCIL_DENY, and review
         # and assignment set it to the whole ROOT/.council tree, which holds
         # the run. It was a real gap when the run directory lies anywhere else:
-        # council-plan.sh --out puts it anywhere, and council-review.sh's own
-        # refusal invites placing it "where git ignores it", which can be any
-        # ignored path inside ROOT, while COUNCIL_DENY2 still names only
+        # council-plan.sh --out puts it anywhere, an ignored or a tracked path
+        # inside ROOT included, while COUNCIL_DENY2 still names only
         # ROOT/.council. Such a function was not denied the run directory. In
         # 0.4.0 that held inside ROOT and outside it alike (a read outside the
         # root was measured unrefused on 2026-11-14). With the flags of
         # council_seat_flags, a read by absolute path outside the root was
         # refused (measured 2026-11-19), so the part of that gap still open
-        # without this exact match is a run directory at an ignored path
-        # inside ROOT.
+        # without this exact match is a run directory inside ROOT and
+        # outside ROOT/.council.
         case "$_code" in
           *'$COUNCIL_DENY'[!A-Za-z0-9_]*|*'${COUNCIL_DENY'[!A-Za-z0-9_]*) ;;
           *) _missing="$_missing $_fn" ;;
