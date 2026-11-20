@@ -431,6 +431,45 @@ start** when a config overrides an exported value, and names both values and
 the line to write. So if you add a setting, keep the `VAR="${VAR:-default}"`
 form.
 
+### What the prompts say about your repository
+
+No seat has a shell, so no seat can run git to say which commit it read. The
+runner reads it and puts it in the prompt:
+
+- **At planning**, one block at the end of the shared prompt: `HEAD`
+  (`git rev-parse HEAD`), the branch, and `git status --porcelain` verbatim,
+  or `clean`, or `not a git work tree`. It is read once and is part of the
+  bytes every planner receives, so the check that the planners' prompts are
+  identical covers it: planners told different facts about the tree would be
+  comparing situations, not plans. `council.txt` records the same facts as
+  `head=`, `branch=`, `tree=` and one `tree.<n>=` per status line.
+- **At review**, every attack prompt and the arbiter's prompt carry two
+  blocks: the repository at planning, read back from `council.txt`, and the
+  repository now. When both HEADs are commits and they differ, the second
+  block also carries `git diff --stat <HEAD at planning> <HEAD now>`, so a
+  seat checking a claim against code that has moved is told it moved.
+- **Assignment** gets no such block.
+
+**The price: file names reach the prompts verbatim.** Every path
+`git status --porcelain` prints, and every path `git diff --stat` prints,
+goes to every seat, and from there to the model provider behind it, Codex
+included. `git status --porcelain` names untracked files unless git ignores
+them, so a scratch file in the tree, such as `notes-for-me.txt`, is named in
+the prompt. It lists the whole repository, not only the context root, when
+the root is a subdirectory. Only names: no file's content is added this way.
+If a name should not leave the machine, ignore the file (`.gitignore` or
+`.git/info/exclude`) or move it out of the repository before a run.
+
+Run directories: under the default layout `<root>/.council` holds a
+`.gitignore` of `*`, so no run is ever named. A run placed with `--out` at a
+path git does not ignore is named once it holds files, by default as its
+directory (`?? runs/`); an earlier run there is named that way in a later
+run's prompts. This run's own directory is empty when the planning block is
+read, and git does not list an empty directory.
+
+Not a git work tree, no commits yet, a detached HEAD and `git` missing from
+`PATH` are all said in the block, in words; none of them stops a run.
+
 ### Effort per phase, and a spending cap
 
 How deep each model reasons is set per phase, because one planner function
