@@ -1,6 +1,6 @@
 ---
 description: Cross-attack in parallel, then a read-only arbiter decides, verifying claims in the code.
-argument-hint: "<run-dir> [--arbitrate-only]"
+argument-hint: "<run-dir> [--arbitrate-only] [--no-seat-check]"
 ---
 
 Run the plan-council review phase for: $ARGUMENTS
@@ -13,7 +13,7 @@ Run the plan-council review phase for: $ARGUMENTS
    Run it with `sh`, and do not assume the user's OS or shell: on Windows, PowerShell and cmd have no `sh` on `PATH` and need the full path to Git's launcher (`<git-root>\bin\sh.exe`, never `usr\bin\sh.exe`, which cannot find `dirname` when started from PowerShell).
 2. Run, in the background:
    `sh "<scripts>/council-review.sh" <run-dir>`
-   Each planner attacks the other plans with its own model, all at once; then the arbiter runs with no edit or write tool and its report lands in `<run-dir>/arbitration.md`. If only the arbiter failed, rerun with `--arbitrate-only`.
+   Each planner attacks the other plans with its own model, all at once; then the arbiter runs with no edit or write tool and no shell, and its report lands in `<run-dir>/arbitration.md`. If only the arbiter failed, rerun with `--arbitrate-only`. If the arguments include `--no-seat-check`, pass it on: it skips the seat check, which calls each Claude seat once before each phase to confirm that a read of the run directory is refused, and `council.txt` then records `skipped`.
 3. Check the run yourself: one non-empty `attack-<letter>.md` per plan and a non-empty `arbitration.md`. Read the arbitration in full.
 4. Report to the user: the verdict (PASS, FIX or RETHINK), the numbered decisions in one line each, and **every item in "Left for the human"** with its alternatives. Do not resolve those for them.
 5. Then, if the verdict is PASS or FIX and the user has settled the open questions, write the final plan to `<run-dir>/final-plan.md`, following the arbiter's "Take from each plan" lists exactly. You are writing it, so you do not approve it: if the user wants a check, dispatch the `reviewer` agent on it. If the verdict is RETHINK, say so and propose a revised brief instead of writing a plan.

@@ -112,6 +112,17 @@ better, and nothing in the plugin has measured that. If the user is on a
 subscription rather than API billing, say these figures are the scale, not a
 bill.
 
+**If `CODEX=yes`, say this before Codex is offered as a planner, on either
+path below:** a Codex seat is not held to what a Claude seat is held to.
+Measured 2026-11-19: under `--sandbox read-only` it refused a write, but it
+read an absolute path outside the context root, and `codex exec --help`
+offers nothing that restricts reads. So a Codex seat cannot write but can
+read outside the root; a Claude seat can do neither. No deny rule reaches a
+Codex seat and the seat check does not call it, so nothing the plugin
+enforces keeps it from reading `council.txt`, which says which planner wrote
+which plan: with Codex seated, its side of the blind cross-attack rests on
+its own conduct. Let the user decide with that in view.
+
 Then ask how the models should be chosen:
 
 - **A mode.** One question about the situation sets how deep each phase thinks
@@ -332,7 +343,9 @@ and `"$COUNCIL_DENY"` passed to the CLI. A function that drives `claude` must
 also call `$(council_seat_flags)`, unquoted, on its command line, as the
 shipped ones do: without it the function loads the host's settings, hooks and
 connector tools, and answers a different question from the seats the plugin
-ships.
+ships. It must also name `Bash` in its `--disallowedTools`, as the shipped
+ones do; the text check refuses a function that does not, and the seat check
+does not test it.
 
 Then run `council-doctor.sh --root <root> --no-model-check` and show the
 result. It must load the new config and report the chosen planners. Fix
@@ -350,8 +363,10 @@ Then:
   same way.
 - Settle the context root: the directory holding the code *and* the working
   material around it. Note that the root decides where each planner starts,
-  not what it can reach: a child agent can read an absolute path outside the
-  root, so the root is not a boundary.
+  and what it can reach only for a Claude planner: a Claude planner's read
+  of an absolute path outside the root is refused, while a Codex planner can
+  read outside it (both measured 2026-11-19), so with Codex seated the root
+  is not a boundary.
 - Hand off to `/council-plan <brief> --root <root>`, giving the command in the
   form that works in the shell they named in section 1.
 
