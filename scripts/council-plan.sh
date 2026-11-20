@@ -7,8 +7,8 @@
 #   BRIEF       a Markdown file describing what to plan
 #   --root DIR  the context root: the directory holding the code AND the
 #               working material around it (notes, earlier plans). Every
-#               planner is started from here and can read only under it.
-#               Default: the current directory.
+#               planner starts here; a claude one reads only under it, a
+#               codex one can read outside it. Default: the current directory.
 #   --out DIR   where the run is published. Default: ROOT/.council/<timestamp>
 #   --no-model-check  under a mode, skip asking each Claude model ID in play
 #               for one word before the planners run (the identity gate)

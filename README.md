@@ -382,8 +382,9 @@ so something else did. With a run directory outside the root, as `--out` can
 place it, `--restricted` alone refuses the read with no deny rule at all, and
 the record says that it does not show a deny rule did it. It shows that one
 read, in a separate process, just before the phase, was refused; it is no
-record of the calls that follow. A seat whose function does not run
-`claude` itself is not probed, and the record lists it. `--no-seat-check`
+record of the calls that follow. Nor does it check that `Bash` is denied.
+A seat whose function does not run `claude` itself is not probed, and the
+record lists it. `--no-seat-check`
 skips the check, and `council.txt` then records `skipped`. `council-assign.sh`
 does not run it.
 
@@ -483,9 +484,12 @@ pin `COUNCIL_MODEL_CODEX` if you want it fixed.
 COUNCIL_PLANNERS="claude codex"
 
 planner_claude() {
-  claude -p --model claude-opus-5-5 --permission-mode default \
-    --allowedTools Read Glob Grep "Bash(git log:*)" ... \
-    --disallowedTools Edit Write NotebookEdit \
+  claude -p --model "$COUNCIL_MODEL_CLAUDE" \
+    --effort "$(council_effort)" \
+    --permission-mode default \
+    $(council_budget_flags) \
+    $(council_seat_flags) \
+    --disallowedTools Edit Write NotebookEdit Bash "$COUNCIL_DENY" "$COUNCIL_DENY2" \
     > "$1"
 }
 ```
@@ -709,12 +713,17 @@ Two traps cannot be designed out by a plugin, so here they are, stated plainly:
 ## Version-sensitive flags
 
 The planner and arbiter functions use `claude -p`, `--model`, `--effort`,
-`--max-budget-usd`, `--permission-mode default`, `--allowedTools`,
-`--disallowedTools`, `--output-format json`, and `codex exec --sandbox
-read-only --skip-git-repo-check --output-last-message -`. Every one of those
-was confirmed present in Claude Code 2.1.325 and codex-cli 0.162.1 on
-2026-11-14; `--effort` takes `low`, `medium`, `high`, `xhigh` or `max`, and
-`--max-budget-usd` works only together with `--print`, which every function
+`--max-budget-usd`, `--permission-mode default`, `--disallowedTools`,
+`--output-format json`, and `codex exec --sandbox read-only
+--skip-git-repo-check --output-last-message -`. Every one of those was
+confirmed present in Claude Code 2.1.325 and codex-cli 0.162.1 on
+2026-11-14. The `claude` seats also carry `$(council_seat_flags)`:
+`--restricted --tools Read,Glob,Grep --setting-sources project,local
+--strict-mcp-config --disable-slash-commands`, measured as a set on
+2026-11-19; the comment above `council_seat_flags` in `scripts/lib.sh` says
+what each flag is for and which one was not measured on its own. They no
+longer pass `--allowedTools`. `--effort` takes `low`, `medium`, `high`,
+`xhigh` or `max`, and `--max-budget-usd` works only together with `--print`, which every function
 here uses.
 
 Two shapes matter beyond the names. `--allowedTools` and `--disallowedTools`
@@ -729,9 +738,11 @@ Permission modes in particular
 between versions. A mode that sounds permissive can deny everything in a
 non-interactive session, and an edit-accepting mode alone leaves every shell
 command waiting for an approval that never comes. The read-only roles here
-rely on a plain allow-list in non-interactive mode, where anything not
-allowed is denied. For a child **executor** that must edit and run commands,
-the pattern that works is an edit-accepting mode, plus an explicit
+do not rely on an allow-list: measured 2026-11-19, `--allowedTools` is not
+exclusive, and a child given only `Read` ran `git log`. They rely on
+`--tools Read,Glob,Grep`, measured exclusive, so a `claude` seat holds
+exactly `Glob`, `Grep` and `Read` and no shell. For a child **executor**
+that must edit and run commands, the pattern that works is an edit-accepting mode, plus an explicit
 allow-list of the commands it needs, plus a deny-list (commit, push, deploy,
 remote shell, recursive delete). Check `claude --help` and `codex exec --help` on
 the installed versions, and run `/council-doctor` after every upgrade.
@@ -812,19 +823,28 @@ agreeing. One run is not a track record.
 
 **Real gaps that remain, now stated plainly:**
 
-- **The context root is not a boundary.** A read-only child agent read an
-  absolute path *outside* the root with no refusal at all. Earlier versions of
-  this README and of `skills/council/SKILL.md` said such a read was silently
-  refused. That was wrong. The root decides where an agent starts and what its
-  relative paths mean, nothing more.
+- **The context root is a boundary for a Claude seat, not for a Codex seat.**
+  On 2026-11-14 a read-only child agent read an absolute path *outside* the
+  root with no refusal at all. Earlier versions of this README and of
+  `skills/council/SKILL.md` said such a read was silently refused; that was
+  wrong then. With `$(council_seat_flags)`, which every `claude` seat the
+  plugin ships now carries, a `claude` seat's read of an absolute path
+  outside the root is refused by `--restricted`, and it has no tool that
+  writes (measured 2026-11-19). A Codex seat is the reverse on
+  reading: measured 2026-11-19, under `--sandbox read-only` it refused a
+  write and **read an absolute path outside the root**, and `codex exec
+  --help` offers nothing that restricts reads. So a Codex seat cannot write
+  but can read outside the root; a Claude seat can do neither.
 - **The arbiter's blindness is enforced for Claude children only.** The run
   directory holds `council.txt`, which maps each letter to its planner, and the
   config turns a planner name into an exact model in one more read. Each child
   is now given a deny rule covering that directory, and `council-detect.sh`
   proves the rule works with a canary before you trust it. But the rule is a
   Claude Code permission rule: **it does not reach Codex**, whose read access is
-  whatever that CLI grants. With Codex as a planner, the attack phase's
-  blindness rests on the prompt. `/council-doctor` names every function the rule
+  whatever that CLI grants. With Codex as a planner, nothing the plugin
+  enforces keeps it out of the run directory during the attack phase, and no
+  prompt in `prompts/` asks a seat to stay out of it. The seat check does not
+  call a Codex seat either. `/council-doctor` names every function the rule
   cannot cover.
   A function that drives `claude` and simply **drops** the rule is a different
   case, and no longer a tolerated one: planning and both review phases refuse
