@@ -168,6 +168,62 @@ plans_block() {
   done
 }
 
+# The repository, twice: as the planners were told it, read back from
+# council.txt, and as it is now, read with git (council_git_facts in lib.sh,
+# whose comment says why the runner supplies this and what it discloses).
+# When both HEADs are commits and they differ, the second block carries git
+# diff --stat between them: an attacker or the arbiter checking a claim
+# against code that has moved since planning is told it moved, and where.
+# Built once per phase and appended to every prompt of that phase, so every
+# attacker reads the same block. Read before the phase's seat check plants a
+# file in the run directory, so that file is never named.
+#
+# What this can name: git status --porcelain and git diff --stat name paths
+# inside the repository, and whether a run directory is among them depends on
+# the layout. Under the default ROOT/.council, whose .gitignore of "*" covers
+# itself and every run, no run is named. A run placed with --out at a path git
+# does not ignore is named: by default as its untracked directory ("?? runs/",
+# tested in scripts/tests/repository-block.sh), file by file when git is set
+# to show every untracked file (git's documented behaviour, not tested here),
+# and in git diff --stat if it was committed between the two HEADs. Names only, never a file's content: council.txt can
+# be named, what it maps cannot be read from here.
+repository_blocks() {
+  if grep -q '^head=' "$MANIFEST"; then
+    _rb_ph=$(council_manifest_get "$MANIFEST" head)
+    _rb_pb=$(council_manifest_get "$MANIFEST" branch)
+    _rb_pt=$(council_manifest_get "$MANIFEST" tree)
+    _rb_ps=$(sed -n 's/^tree\.[0-9][0-9]*=//p' "$MANIFEST")
+  else
+    _rb_ph="not recorded: this run was planned before plan-council recorded the repository"
+    _rb_pb="not recorded"
+    _rb_pt="not recorded"
+    _rb_ps=""
+  fi
+  council_git_block "The repository at planning" \
+    "What the planners were told when they wrote the plans: the runner read it with git, from the context root, just before planning started. File names below are git's own output, verbatim." \
+    "$_rb_ph" "$_rb_pb" "$_rb_pt" "$_rb_ps" ""
+  council_git_facts "$ROOT"
+  if ! grep -q '^head=' "$MANIFEST"; then
+    _rb_x="since planning: not known, because no HEAD at planning was recorded"
+  elif [ "$_rb_ph" = "$COUNCIL_GIT_HEAD" ] && council_git_is_commit "$_rb_ph"; then
+    _rb_x="since planning: HEAD has not moved"
+  elif [ "$_rb_ph" = "$COUNCIL_GIT_HEAD" ]; then
+    _rb_x="since planning: no commit then and none now, so there is nothing to compare"
+  elif council_git_is_commit "$_rb_ph" && council_git_is_commit "$COUNCIL_GIT_HEAD"; then
+    if _rb_d=$(cd "$ROOT" && git --no-pager diff --no-ext-diff --no-color --stat "$_rb_ph" "$COUNCIL_GIT_HEAD" 2> /dev/null); then
+      [ -n "$_rb_d" ] || _rb_d="(no output: no file differs between the two commits)"
+      _rb_x=$(printf 'since planning: HEAD has moved\ngit diff --stat %s %s:\n%s' "$_rb_ph" "$COUNCIL_GIT_HEAD" "$_rb_d")
+    else
+      _rb_x="since planning: HEAD has moved, and git could not compare the two commits (the commit at planning may no longer be in this repository)"
+    fi
+  else
+    _rb_x="since planning: HEAD has changed, and one of the two is not a commit, so there is nothing to compare"
+  fi
+  council_git_block "The repository now" \
+    "What the runner read with git, from the same context root, just before this prompt was sent. Where HEAD has moved, the code you can read is not the code the plans were written against. File names below are git's own output, verbatim." \
+    "$COUNCIL_GIT_HEAD" "$COUNCIL_GIT_BRANCH" "$COUNCIL_GIT_TREE" "$COUNCIL_GIT_STATUS" "$_rb_x"
+}
+
 # The run directory holds council.txt, which maps each letter to its planner,
 # and with the config that is one read away from the model. Every child agent
 # here is handed what it needs in its own prompt, so the directory is denied
@@ -188,6 +244,7 @@ if [ "$ARBITRATE_ONLY" -eq 0 ]; then
   done
   JOBS=""
   FNS=""
+  repository_blocks > "$STAGE/repository-attack.md" || council_die "cannot write the repository blocks in $STAGE"
   for L in $LETTERS; do
     name=$(council_manifest_get "$MANIFEST" "planner\\.$L")
     {
@@ -196,6 +253,7 @@ if [ "$ARBITRATE_ONLY" -eq 0 ]; then
       cat "$RUN/brief.md"
       plans_block
       printf '\n'
+      cat "$STAGE/repository-attack.md"
     } > "$STAGE/prompt-$L.md"
     JOBS="$JOBS $L:planner_$name"
     FNS="$FNS planner_$name"
@@ -255,6 +313,9 @@ KEEP=$(grep -v -e '^model\.arbiter=' -e '^model\.arbiter\.from=' "$MANIFEST")
   printf 'model.arbiter.from=%s\n' "the setting COUNCIL_MODEL_ARBITER in effect for this review, which the plugin's own arbiter function passes as --model; what was asked for, not proof of what answered"
 } > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST" || { rm -f "$MANIFEST.tmp"; council_die "cannot record model.arbiter in $MANIFEST, so the arbiter was not called. The attacks are in $RUN (attack-*.md): once council.txt can be written, rerun with --arbitrate-only to arbitrate on them without running the attacks again."; }
 [ ! -e "$RUN/arbitration.md" ] || mv "$RUN/arbitration.md" "$RUN/arbitration.$(date +%Y%m%d-%H%M%S).old.md"
+# Read again: the attacks take minutes, and the arbiter checks claims against
+# the code as it is when it runs.
+repository_blocks > "$STAGE/repository-arbiter.md" || council_die "cannot write the repository blocks in $STAGE"
 {
   cat "$PLUGIN_ROOT/prompts/arbiter.md"
   printf '\n---\n\n# The brief\n\n'
@@ -265,6 +326,7 @@ KEEP=$(grep -v -e '^model\.arbiter=' -e '^model\.arbiter\.from=' "$MANIFEST")
     cat "$RUN/attack-$L.md"
   done
   printf '\n'
+  cat "$STAGE/repository-arbiter.md"
 } > "$STAGE/prompt-arbiter.md"
 
 COUNCIL_PHASE=arbitrate

@@ -1685,6 +1685,131 @@ council_manifest_get() {
   sed -n "s/^$2=//p" "$1" | head -n 1
 }
 
+# --- The repository, as the runner reads it for the seats ---------------------
+# No seat has a shell: $(council_seat_flags) gives a claude seat Read, Glob and
+# Grep only, so a planner cannot run git rev-parse to say which commit it read.
+# The host injects a git snapshot into every Claude child, and
+# --exclude-dynamic-system-prompt-sections does not remove it (measured), but
+# the plugin does not control that injection, it can change under it, and a
+# Codex seat does not get it at all. So the runner reads the facts itself and
+# hands them over in the prompt.
+#
+# The reason that survives any change in the CLIs: the planners must read the
+# same bytes. A blind council whose planners are told different facts about
+# the tree is not comparing plans, it is comparing situations. That is why
+# council-plan.sh reads these facts once and puts them in the one shared
+# prompt, before the per-planner copies and the check that they are identical,
+# and never per planner.
+#
+# The price: file names reach the prompts verbatim, through git status
+# --porcelain here and git diff --stat at review. git status --porcelain names
+# untracked files that are not ignored, so a scratch file in the tree is named
+# in the prompt. The README's "What the prompts say about your repository"
+# says so where a user configuring this will see it.
+
+# council_git_facts ROOT -- reads, with git, from ROOT, and sets:
+#   COUNCIL_GIT_HEAD    the commit HEAD names, or a sentence starting "none:"
+#                       or "unknown:" saying why there is none;
+#   COUNCIL_GIT_BRANCH  the branch, or a sentence starting "none:" or
+#                       "unknown:";
+#   COUNCIL_GIT_TREE    clean, dirty, "not a git work tree", or a sentence
+#                       starting "unknown:";
+#   COUNCIL_GIT_STATUS  the output of git status --porcelain, verbatim, when
+#                       the tree is dirty; empty otherwise.
+# It never fails the run: a root git cannot describe is described as such.
+# git status runs with GIT_OPTIONAL_LOCKS=0, so reading the tree does not
+# refresh and rewrite the index of the user's repository.
+council_git_facts() {
+  COUNCIL_GIT_HEAD=""
+  COUNCIL_GIT_BRANCH=""
+  COUNCIL_GIT_TREE=""
+  COUNCIL_GIT_STATUS=""
+  if ! command -v git > /dev/null 2>&1; then
+    COUNCIL_GIT_HEAD="unknown: git is not on PATH"
+    COUNCIL_GIT_BRANCH="unknown: git is not on PATH"
+    COUNCIL_GIT_TREE="unknown: git is not on PATH"
+    return 0
+  fi
+  _gf_in=$(cd "$1" 2> /dev/null && git rev-parse --is-inside-work-tree 2> /dev/null)
+  if [ "$_gf_in" != true ]; then
+    COUNCIL_GIT_HEAD="none: not a git work tree"
+    COUNCIL_GIT_BRANCH="none: not a git work tree"
+    COUNCIL_GIT_TREE="not a git work tree"
+    return 0
+  fi
+  if _gf_h=$(cd "$1" && git rev-parse -q --verify 'HEAD^{commit}' 2> /dev/null) \
+    && council_git_is_commit "$_gf_h"; then
+    COUNCIL_GIT_HEAD=$_gf_h
+  else
+    COUNCIL_GIT_HEAD="none: HEAD names no commit (a repository with no commits yet, or a branch with none)"
+  fi
+  if _gf_b=$(cd "$1" && git symbolic-ref -q --short HEAD 2> /dev/null) && [ -n "$_gf_b" ]; then
+    COUNCIL_GIT_BRANCH=$_gf_b
+  elif council_git_is_commit "$COUNCIL_GIT_HEAD"; then
+    COUNCIL_GIT_BRANCH="none: detached HEAD"
+  else
+    COUNCIL_GIT_BRANCH="none: git names no branch"
+  fi
+  if _gf_s=$(cd "$1" && GIT_OPTIONAL_LOCKS=0 git status --porcelain 2> /dev/null); then
+    if [ -n "$_gf_s" ]; then
+      COUNCIL_GIT_TREE=dirty
+      COUNCIL_GIT_STATUS=$_gf_s
+    else
+      COUNCIL_GIT_TREE=clean
+    fi
+  else
+    COUNCIL_GIT_TREE="unknown: git status failed"
+  fi
+  return 0
+}
+
+# council_git_is_commit VALUE -- true when VALUE is shaped like a full object
+# name (40 or 64 lower-case hex digits), as git rev-parse prints one.
+council_git_is_commit() {
+  case "$1" in
+    ''|*[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
+}
+
+# council_git_block TITLE INTRO HEAD BRANCH TREE STATUS EXTRA -- prints one
+# labelled block: a separator, a heading, INTRO, then the facts in a fenced
+# block. STATUS (git status --porcelain, verbatim) and EXTRA (more lines,
+# such as a git diff --stat) are printed only when not empty. The fence is a
+# run of tildes longer than any run of tildes in what it holds, so no file
+# name can close it early.
+council_git_block() {
+  _gb_body=$(
+    printf 'HEAD: %s\n' "$3"
+    printf 'branch: %s\n' "$4"
+    printf 'tree: %s\n' "$5"
+    if [ -n "$6" ]; then
+      printf 'git status --porcelain:\n%s\n' "$6"
+    fi
+    if [ -n "$7" ]; then
+      printf '%s\n' "$7"
+    fi
+  )
+  _gb_fence=$(printf '%s\n' "$_gb_body" | awk '
+    { s = $0; while (match(s, /~+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } }
+    END { n = (m >= 3) ? m + 1 : 3; while (n-- > 0) printf "~" }')
+  printf '\n---\n\n# %s\n\n%s\n\n%s\n%s\n%s\n' "$1" "$2" "$_gb_fence" "$_gb_body" "$_gb_fence"
+}
+
+# council_check_prompts_identical PROMPT STAGE LETTER... -- dies unless
+# STAGE/prompt-LETTER.md is byte for byte PROMPT, for every LETTER. The
+# repository block is in PROMPT, so a block built per planner, or built twice
+# and different, fails here, before any planner is paid for.
+council_check_prompts_identical() {
+  _cpi_ref=$1
+  _cpi_stage=$2
+  shift 2
+  for _cpi_l in "$@"; do
+    cmp -s "$_cpi_ref" "$_cpi_stage/prompt-$_cpi_l.md" || council_die "prompt for planner $_cpi_l differs"
+  done
+  return 0
+}
+
 # council_codex_announced_model LOG -- prints the model Codex ANNOUNCED in the
 # banner at the top of its own stderr log, or 'unknown'.
 #

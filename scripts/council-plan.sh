@@ -72,11 +72,25 @@ PROMPT="$STAGE/prompt.md"
 PLAN_MD="$PLUGIN_ROOT/prompts/plan.md"
 [ -f "$PLAN_MD" ] || council_die "the planning instructions are missing: $PLAN_MD does not exist. Every planner's prompt starts with that file; without it each planner would be paid to read the brief with no instructions. Restore prompts/plan.md, or reinstall the plugin. Nothing has been run."
 grep -q '[^[:space:]]' "$PLAN_MD" 2>/dev/null || council_die "the planning instructions are empty or unreadable: $PLAN_MD holds no text that can be read. Every planner's prompt starts with that file; without it each planner would be paid to read the brief with no instructions. Restore prompts/plan.md, or reinstall the plugin. Nothing has been run."
+# The repository, last: HEAD, the branch and git status --porcelain, read
+# once, here, and written into this one prompt, so every planner is told the
+# same facts in the same bytes and the identity check below covers them (the
+# comment above council_git_facts in lib.sh says why that matters more than
+# what the host already injects). Read before the seat check plants its file
+# in the run directory, and while the run directory is still empty, which git
+# does not list, so this run's own directory never appears in it. The same
+# facts are recorded in council.txt below, for the review.
+council_git_facts "$ROOT"
+council_git_block "The repository at planning" \
+  "The runner read this with git, from the context root, once, just before planning started; you have no shell to read it yourself. When you say which commit you read, cite this HEAD. File names below are git's own output, verbatim." \
+  "$COUNCIL_GIT_HEAD" "$COUNCIL_GIT_BRANCH" "$COUNCIL_GIT_TREE" "$COUNCIL_GIT_STATUS" "" \
+  > "$STAGE/repository.md" || council_die "cannot write the repository block in $STAGE"
 {
   cat "$PLUGIN_ROOT/prompts/plan.md"
   printf '\n'
   cat "$BRIEF_ABS"
   printf '\n'
+  cat "$STAGE/repository.md"
 } > "$PROMPT"
 [ "$(council_size "$PROMPT")" -gt "$(council_size "$BRIEF_ABS")" ] || council_die "prompt assembly failed: $PROMPT"
 # Codex echoes this prompt into the stderr log that council_codex_announced_model
@@ -94,6 +108,7 @@ fi
 # published logs then carry a letter, so no log attributes a plan to a model.
 JOBS=""
 FNS=""
+LETTERS=""
 i=0
 for name in $COUNCIL_PLANNERS; do
   i=$((i + 1))
@@ -101,14 +116,12 @@ for name in $COUNCIL_PLANNERS; do
   cp "$PROMPT" "$STAGE/prompt-$letter.md"
   JOBS="$JOBS $letter:planner_$name"
   FNS="$FNS planner_$name"
+  LETTERS="$LETTERS $letter"
 done
-# Belt and braces: prove the prompts are byte-identical before spending.
-i=0
-for name in $COUNCIL_PLANNERS; do
-  i=$((i + 1))
-  letter=$(council_letter "$i")
-  cmp -s "$PROMPT" "$STAGE/prompt-$letter.md" || council_die "prompt for planner $letter differs"
-done
+# Belt and braces: prove the prompts are byte-identical before spending,
+# repository block included.
+# shellcheck disable=SC2086
+council_check_prompts_identical "$PROMPT" "$STAGE" $LETTERS
 
 # Keep every planner out of the run directory. Nothing it needs is in there,
 # and once the plans are published the attribution is.
@@ -305,6 +318,17 @@ cp "$BRIEF_ABS" "$OUT/brief.md"
   printf 'brief=%s\n' "$BRIEF_ABS"
   printf 'config=%s\n' "$COUNCIL_CONFIG_USED"
   printf 'created=%s\n' "$(date)"
+  # The repository as every planner was told it (council_git_facts in lib.sh):
+  # HEAD, the branch, the tree's state, and each line of git status
+  # --porcelain as tree.<n>=. council-review.sh reads these back for the
+  # block that tells each attacker and the arbiter what the plans were
+  # written against.
+  printf 'head=%s\n' "$COUNCIL_GIT_HEAD"
+  printf 'branch=%s\n' "$COUNCIL_GIT_BRANCH"
+  printf 'tree=%s\n' "$COUNCIL_GIT_TREE"
+  if [ -n "$COUNCIL_GIT_STATUS" ]; then
+    printf '%s\n' "$COUNCIL_GIT_STATUS" | awk '{ printf "tree.%d=%s\n", NR, $0 }'
+  fi
   # The mode that dealt the seats (empty: no mode, the by-hand path), and the
   # ladder it drew from. council-review.sh reads mode= to decide whether to
   # check that each Claude planner still attacks on the model it planned with.
