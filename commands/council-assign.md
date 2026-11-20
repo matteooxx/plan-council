@@ -15,6 +15,7 @@ Produce the assignment table for: $ARGUMENTS
 3. Run, in the background:
    `sh "<scripts>/council-assign.sh" <final-plan.md> --root <root>`
    The roster comes from the agents' frontmatter, so the models in the table are the ones the agents are pinned to.
+   Before it starts the assigner it prints a line beginning `plan-council: staging directory`, ending with the directory where the table is first written, as `answer-assign.md`. Note that path. If the run never returns, copy `answer-assign.md` out of that directory **before** you kill it: the script deletes the directory when it exits, and a kill can make it exit, taking the table with it (see "A run that does not return" in the README). Then end it with `/usr/bin/kill -f` on Windows.
 4. Read the resulting `assignment.md` and check it against the rules before showing it:
    - every justification answers *how expensive is it to notice if this is wrong* and *what happens if it goes unnoticed*, not "complex" or "simple";
    - nothing touching data integrity, silent data loss, security or production is below the risk floor;

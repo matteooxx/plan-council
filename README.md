@@ -843,9 +843,12 @@ agreeing. One run is not a track record.
   the repository, `git status` stayed clean and `git check-ignore -v` named
   `.council/.gitignore:1:*` as the rule covering both the ignore file and the
   run's own files.
-- **Portability beyond one shell.** The whole chain runs under `dash` as well
-  as Git Bash's `sh`. See the table in [Requirements](#requirements) for the
-  per-shell invocation; the Windows traps there were each produced on purpose.
+- **Portability beyond one shell.** The whole chain has run to the end under
+  `dash` as well as under Git Bash's `sh`. Not every time: under Cygwin
+  `dash` on Windows a run has also failed to return, three times in one day,
+  for a cause not known (see **A run that does not return**, below). See the
+  table in [Requirements](#requirements) for the per-shell invocation; the
+  Windows traps there were each produced on purpose.
 
 **Known false reports from the tooling, neither of which is a defect here:**
 
@@ -882,6 +885,31 @@ agreeing. One run is not a track record.
 
 **Real gaps that remain, now stated plainly:**
 
+- **A run that does not return.** Three times in one day, on Windows under
+  Cygwin `/usr/bin/dash`, a run stayed in the parallel runner's `wait` with
+  its seats already finished: twice in `council-review.sh`, once in
+  `council-plan.sh`. One of the three was measured: 4 h 31 min in `wait`, no
+  live child process, an empty run directory, and a stand-in `claude` that
+  answers in milliseconds, so it was not waiting for a model. `kill` and
+  `kill -KILL` did nothing to it; `/usr/bin/kill -f` ended it.
+  **Not known:** the cause; whether it happens under `sh`, with a real
+  `claude`, or on Linux or macOS; and how often. The runs that did return
+  were not counted, so three is a count with no denominator, not a rate, and
+  nothing here says it is rare.
+  **How to recognise it:** the run has printed a `started` line for each
+  seat, no seat process (`claude`, `codex`) is left running under it, and no
+  `done` or `FAILED` line follows.
+  **What to do, in this order:** before it starts any seat, every phase
+  prints one line that begins `plan-council: staging directory` and ends
+  with that directory's path (a review prints it twice, once per phase, with
+  the same path). Copy `answer-*.md` out of that directory **first**, and
+  only then end the run with `/usr/bin/kill -f`. A kill can delete the
+  directory: the run removes it on exit, and measured on a `council-plan.sh`
+  under `dash`, killed with `/usr/bin/kill -f` while it waited on a slow
+  stand-in, the directory was gone afterwards, `answer-*.md` with it. That
+  run was killed in flight, not hung, because the hang cannot be produced on
+  demand: the trap that deleted the answers is the same one, on the same
+  shell, but the kill of a hung run has not itself been observed.
 - **The context root is a boundary for a Claude seat, not for a Codex seat.**
   On 2026-11-14 a read-only child agent read an absolute path *outside* the
   root with no refusal at all. Earlier versions of this README and of

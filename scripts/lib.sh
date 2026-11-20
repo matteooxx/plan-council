@@ -2330,8 +2330,13 @@ council_seat_record_into() {
 # Labels are letters, never planner names: the stage files and the published
 # logs carry the label, so no log can attribute a plan to a model.
 # Returns non-zero if any job failed or produced no real answer.
+# The staging path is printed before anything starts: a run that never
+# returns (see "A run that does not return" in the README) can only be
+# ended by a kill, the callers' EXIT trap then deletes this directory, and
+# nothing else names it. The answers must be copied out before the kill.
 council_run_parallel() {
   _root=$1; _stage=$2; shift 2
+  council_say "staging directory, where this phase writes answer-*.md; it is deleted when this script exits, and a kill can make it exit, so if the run never returns, copy answer-*.md out of it before you kill it: $_stage"
   _jobs=""
   for _job in "$@"; do
     _label=${_job%%:*}

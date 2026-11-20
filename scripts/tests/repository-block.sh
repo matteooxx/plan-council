@@ -325,6 +325,10 @@ t_review() {
     > "$T_TMP/review.out" 2> "$T_TMP/review.err" || T_RC=$?
 }
 
+# The fixed start of the line council_run_parallel prints before it starts
+# any seat; the staging directory's path follows it, to the end of the line.
+T_STAGE_SAY="plan-council: staging directory, where this phase writes answer-*.md; it is deleted when this script exits, and a kill can make it exit, so if the run never returns, copy answer-*.md out of it before you kill it: "
+
 T_SHELLS="sh"
 [ -x /usr/bin/dash ] && T_SHELLS="$T_SHELLS /usr/bin/dash"
 for T_SH in $T_SHELLS; do
@@ -338,6 +342,17 @@ for T_SH in $T_SHELLS; do
   T_HEAD=$(t_git "$R" rev-parse HEAD)
   t_plan "$T_SH" "$R"
   t_same "$T_N council-plan.sh, a clean tree: exits" 0 "$T_RC"
+  # The staging path, printed once. The directory is gone by now (the EXIT
+  # trap removed it), so only the string is checked: it must name a
+  # directory under the TMPDIR the run was given. Both sides are pwd -P.
+  _t_got=$(grep -c -F -e "$T_STAGE_SAY" "$T_TMP/plan.err")
+  t_same "$T_N council-plan.sh: lines of its messages that name the staging directory" 1 "$_t_got"
+  _t_line=$(grep -F -e "$T_STAGE_SAY" "$T_TMP/plan.err" | head -n 1)
+  _t_got=${_t_line#"$T_STAGE_SAY"}
+  case $_t_got in
+    "$T_TMP/tmp"/*) t_ok "$T_N council-plan.sh: the staging directory it names is under its TMPDIR" ;;
+    *) t_bad "$T_N council-plan.sh: the staging directory it names is under its TMPDIR" "$T_TMP/tmp/..." "$_t_got" ;;
+  esac
   t_load
   t_same "$T_N council-plan.sh, a clean tree: prompts sent" 2 "$T_NP"
   if cmp -s "$P1" "$P2"; then _t_got=identical; else _t_got=different; fi
