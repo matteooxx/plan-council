@@ -1,6 +1,6 @@
 {
   "name": "plan-council",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Blind parallel planning by rival models, a parallel cross-attack, a read-only arbiter, risk-based task assignment and execution discipline.",
   "author": { "name": "matteooxx" }
 }
