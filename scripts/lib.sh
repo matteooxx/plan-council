@@ -2334,6 +2334,15 @@ council_seat_record_into() {
 # returns (see "A run that does not return" in the README) can only be
 # ended by a kill, the callers' EXIT trap then deletes this directory, and
 # nothing else names it. The answers must be copied out before the kill.
+# Each seat's stdin, stdout and stderr are redirected inside its subshell,
+# by exec, and not on the backgrounded subshell as a whole: hangs in the
+# wait below were counted only with the redirections on the backgrounded
+# subshell, in a stand-in on one machine. Why is not known, and this shape is
+# not known to prevent them (see the same README entry). exec comes before
+# cd, so that a failed cd is written to stderr-<label>.log, the file the
+# FAILED line names. A failed exec redirection exits 96: bash run as bash,
+# not as sh, carries on past it, and the seat would then run on the runner's
+# own stdin and stdout.
 council_run_parallel() {
   _root=$1; _stage=$2; shift 2
   council_say "staging directory, where this phase writes answer-*.md; it is deleted when this script exits, and a kill can make it exit, so if the run never returns, copy answer-*.md out of it before you kill it: $_stage"
@@ -2342,9 +2351,10 @@ council_run_parallel() {
     _label=${_job%%:*}
     _fn=${_job#*:}
     (
+      exec < "$_stage/prompt-$_label.md" > "$_stage/stdout-$_label.log" 2> "$_stage/stderr-$_label.log" || exit 96
       cd "$_root" || exit 97
       "$_fn" "$_stage/answer-$_label.md"
-    ) < "$_stage/prompt-$_label.md" > "$_stage/stdout-$_label.log" 2> "$_stage/stderr-$_label.log" &
+    ) &
     _jobs="$_jobs $_label:$!"
     council_say "started $_label ($_fn, pid $!)"
   done
