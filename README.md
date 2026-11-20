@@ -362,17 +362,47 @@ line. The check reads text, not the running shell, and it can still be wrong:
 the comments above `council_function_body` and `council_definition_scan` in
 `scripts/lib.sh` list the shapes known to be read wrongly.
 
-Its tests ship with the plugin, so you can run them on your own shell:
+**The seat check.** The text check reads the config; the seat check reads
+a record the CLI writes. Before the seats of each phase are paid for,
+`council-plan.sh` and `council-review.sh` call each seat the text check
+judged to drive `claude` once, by name, from the context root, with
+`--output-format json` added for that call only, and ask it to read a file
+planted in the run directory. The phase goes on only if the CLI's own record
+of that call, its `permission_denials` field, names a refused `Read`, and the
+file's content appears nowhere in what the seat printed. Anything else stops
+the run, names the cause, and says that the text check had passed. It costs
+one call per `claude` seat per phase: before the planners, before the
+attacks and before the arbiter. `council.txt` records the outcome as
+`seatcheck.plan=`, `seatcheck.attack=` and `seatcheck.arbitrate=`, each with
+a `.from=` line saying what was measured.
+
+What a pass does not show is which rule refused the read. With the run
+directory inside the context root, `--restricted` alone does not refuse it,
+so something else did. With a run directory outside the root, as `--out` can
+place it, `--restricted` alone refuses the read with no deny rule at all, and
+the record says that it does not show a deny rule did it. It shows that one
+read, in a separate process, just before the phase, was refused; it is no
+record of the calls that follow. A seat whose function does not run
+`claude` itself is not probed, and the record lists it. `--no-seat-check`
+skips the check, and `council.txt` then records `skipped`. `council-assign.sh`
+does not run it.
+
+The tests of both checks ship with the plugin, so you can run them on your
+own shell:
 
 ```sh
 sh <plugin>/scripts/tests/definitions.sh
 dash <plugin>/scripts/tests/definitions.sh
+sh <plugin>/scripts/tests/permission-denials.sh
+dash <plugin>/scripts/tests/permission-denials.sh
 ```
 
 with `<plugin>` the plugin's directory. They write only to a temporary
 directory, which they remove, and they run `council-assign.sh` and
 `council-doctor.sh` with a stand-in `claude` first on `PATH`, so no model is
-called. When `bash` is installed, one section sources every test config in
+called; `permission-denials.sh` runs `council-plan.sh` and
+`council-review.sh` the same way. When `bash` is installed, one section of
+`definitions.sh` sources every test config in
 bash and compares the definition bash keeps with the one the check names;
 bash is used there only because it can say where a kept function was
 defined, and agreeing with bash is not agreeing with every shell. The exit

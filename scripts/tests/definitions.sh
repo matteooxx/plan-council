@@ -13,8 +13,11 @@
 # The fixtures are written to a temporary directory, which is removed on exit.
 # One section sources every fixture in bash, when bash is installed, and
 # compares what bash keeps with what the scan names; it is the only place the
-# tests run bash, and it is skipped, with a line saying so, without it. The
-# last section runs council-assign.sh and council-doctor.sh, under sh, with a
+# tests source a fixture in bash, and it is skipped, with a line saying so,
+# without it. Three fixtures there are known open: the scan passes them while
+# bash runs another file's seat. One fixture, an alias for ".", is kept out of
+# that comparison and run under sh and dash with a stand-in "claude" instead.
+# The last section runs council-assign.sh and council-doctor.sh, under sh, with a
 # stand-in "claude" first on PATH that records that it was called and fails;
 # no model is called and nothing outside that directory is written.
 #
@@ -1520,6 +1523,30 @@ t_conf hard-unset > /dev/null <<'CONF'
 unset -f arbiter
 CONF
 
+# Three configs the scan is known to pass while bash runs another file's
+# seat. They are listed in t_known_open below, so the comparison reports each
+# as known open; one that stops failing fails the run, so the list cannot go
+# stale. The scan is frozen (see the comment above council_definition_scan),
+# so they stay open.
+t_conf open-case-in-substitution > /dev/null <<'CONF'
+arbiter() {
+  claude -p $(council_seat_flags) --disallowedTools Bash "$COUNCIL_DENY" "$COUNCIL_DENY2" > "$1"
+}
+x=$(echo case)
+. "$HOME/my-seats.conf"
+CONF
+t_conf open-esac-case-in-substitution > /dev/null <<'CONF'
+arbiter() {
+  claude -p $(council_seat_flags) --disallowedTools Bash "$COUNCIL_DENY" "$COUNCIL_DENY2" > "$1"
+}
+x=$(echo "esac" case)
+. "$HOME/my-seats.conf"
+CONF
+t_conf open-command-dot > /dev/null <<'CONF'
+. "$COUNCIL_PLUGIN_ROOT/config/council.conf"
+command . "$HOME/my-seats.conf"
+CONF
+
 echo "Agreement with bash"
 
 # The scan reads text; a shell runs it. For every fixture written above, and
@@ -1542,7 +1569,27 @@ echo "Agreement with bash"
 #     cannot go stale;
 #   - bash keeping a definition from another sourced file agrees only with
 #     unknown, and arbiter left undefined agrees with any answer, since the
-#     check skips a name the shell does not know.
+#     check skips a name the shell does not know;
+#   - a false pass the scan is known to make, and is frozen with, is listed
+#     in t_known_open. It is reported as known open, not counted as agreeing,
+#     and a listed one that gives anything but a false pass fails, as a
+#     listed refusal by design does.
+# Every fixture written to $T_TMP as a .conf file enters this comparison. The
+# alias fixture does not: bash run as bash does not expand the alias, so it
+# would agree with the scan here while sh and dash run another seat. It is
+# pinned below with a stand-in under sh and dash instead.
+
+# t_known_open NAME -- why the scan passes fixture NAME while bash keeps
+# another file's definition. Fails for any other fixture.
+t_known_open() {
+  case "$1" in
+    open-case-in-substitution|open-esac-case-in-substitution)
+      echo "inside a command substitution case and esac are counted as words wherever they appear" ;;
+    open-command-dot)
+      echo "a . after the word command is not taken as a source line" ;;
+    *) return 1 ;;
+  esac
+}
 
 # t_by_design NAME -- why the scan refuses fixture NAME although bash keeps
 # a definition the check could read. Fails for any other fixture.
@@ -1640,6 +1687,14 @@ if command -v bash > /dev/null 2>&1; then
       _t_v="false pass: bash keeps $_t_o1"
     fi
     _t_why=$(t_by_design "$_t_name") || _t_why=""
+    _t_open=$(t_known_open "$_t_name") || _t_open=""
+    if [ -n "$_t_open" ]; then
+      case "$_t_v" in
+        "false pass"*) t_ok "$_t_name: council_definition_scan arbiter, known open ($_t_v, scan $_t_scan): $_t_open" ;;
+        *) t_bad "$_t_name: council_definition_scan arbiter, listed as known open" "a false pass" "$_t_v ($_t_scan)" ;;
+      esac
+      continue
+    fi
     case "$_t_v" in
       agree)
         if [ -n "$_t_why" ]; then
@@ -1660,6 +1715,51 @@ if command -v bash > /dev/null 2>&1; then
 else
   echo "skip  bash is not installed, so the scan was not compared with a shell"
 fi
+
+echo "The alias fixture, under sh and dash"
+
+# A good definition, then an alias for "." and a call of it on another file.
+# The scan names the good definition, and bash run as bash keeps it too,
+# since it does not expand aliases there: that is why this fixture is kept
+# out of the comparison above, which would count it as agreeing. Under sh and
+# dash the alias is expanded and the other file's seat is the one that runs.
+# This pins all of that, with a stand-in claude that prints its arguments: a
+# change to the scan, or to either shell, makes it fail and is seen.
+mkdir -p "$T_TMP/alias" "$T_TMP/alias-home" "$T_TMP/alias-bin"
+cat > "$T_TMP/alias/alias-dot.conf" <<'CONF'
+arbiter() {
+  claude GOOD > "$1"
+}
+alias src=.
+src "$HOME/my-seats.conf"
+CONF
+printf 'arbiter() {\n  claude OTHER > "$1"\n}\n' > "$T_TMP/alias-home/my-seats.conf"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*"\n' > "$T_TMP/alias-bin/claude"
+chmod +x "$T_TMP/alias-bin/claude"
+_t_got=$(COUNCIL_PLUGIN_ROOT=$T_PLUGIN council_definition_scan arbiter "$T_TMP/alias/alias-dot.conf" 0)
+t_same "alias-dot: council_definition_scan arbiter prints" "def 1 3" "$_t_got"
+if command -v bash > /dev/null 2>&1; then
+  _t_got=$(t_oracle "$T_TMP/alias/alias-dot.conf" "")
+  t_same "alias-dot: bash, run as bash, keeps" "def 1" "$_t_got"
+else
+  echo "skip  bash is not installed, so what bash keeps for alias-dot was not asked"
+fi
+T_ALIAS_SHELLS="sh"
+if [ -x /usr/bin/dash ]; then
+  T_ALIAS_SHELLS="$T_ALIAS_SHELLS /usr/bin/dash"
+elif command -v dash > /dev/null 2>&1; then
+  T_ALIAS_SHELLS="$T_ALIAS_SHELLS dash"
+else
+  echo "skip  dash is not installed, so alias-dot was not run under dash"
+fi
+for _t_sh in $T_ALIAS_SHELLS; do
+  rm -f "$T_TMP/alias/out"
+  HOME="$T_TMP/alias-home" PATH="$T_TMP/alias-bin:$PATH" \
+    "$_t_sh" -c '. "$1" > /dev/null 2>&1; arbiter "$2"' t \
+    "$T_TMP/alias/alias-dot.conf" "$T_TMP/alias/out" > /dev/null 2>&1
+  _t_got=$(cat "$T_TMP/alias/out" 2>/dev/null)
+  t_same "alias-dot: under $_t_sh, the seat that runs prints" "OTHER" "$_t_got"
+done
 
 echo "House rule"
 

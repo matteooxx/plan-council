@@ -1,10 +1,12 @@
 #!/bin/sh
 # Cross-attack, then arbitration, on a run produced by council-plan.sh.
 #
-# Usage: council-review.sh RUN_DIR [--arbitrate-only]
+# Usage: council-review.sh RUN_DIR [--arbitrate-only] [--no-seat-check]
 #   RUN_DIR           the directory council-plan.sh printed
 #   --arbitrate-only  reuse the attack-*.md files already in RUN_DIR and run
 #                     only the arbiter (for when the arbiter failed)
+#   --no-seat-check   skip calling each claude seat once, before each phase,
+#                     to read the CLI's record of a refused read of RUN_DIR
 #
 # Each planner attacks the other plans with its own model. The attacks run in
 # parallel and are published only when all have finished, so no critic reads
@@ -16,13 +18,15 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P) || exit 1
 PLUGIN_ROOT=$(dirname "$SCRIPT_DIR")
 . "$SCRIPT_DIR/lib.sh"
 
-usage() { sed -n '2,11p' "$SCRIPT_DIR/council-review.sh" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "$SCRIPT_DIR/council-review.sh" | sed 's/^# \{0,1\}//'; }
 
 RUN=""
 ARBITRATE_ONLY=0
+SEAT_CHECK=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --arbitrate-only) ARBITRATE_ONLY=1; shift ;;
+    --no-seat-check) SEAT_CHECK=0; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) council_die "unknown option: $1" ;;
     *) [ -z "$RUN" ] || council_die "only one run directory"; RUN=$1; shift ;;
@@ -143,7 +147,7 @@ if [ "$ARBITRATE_ONLY" -eq 0 ]; then
 fi
 
 STAGE=$(council_stage "$ROOT")
-trap 'rm -rf "$STAGE"' EXIT
+trap 'council_seat_unplant; rm -rf "$STAGE"' EXIT
 trap 'exit 130' INT TERM
 
 plans_block() {
@@ -188,6 +192,16 @@ if [ "$ARBITRATE_ONLY" -eq 0 ]; then
   COUNCIL_PHASE=attack
   export COUNCIL_PHASE
   council_require_deny_used "$FNS"
+  # The seat check (council_seat_check in lib.sh), on the run directory as it
+  # is now, with the plans in it: each claude attacker is called once and the
+  # CLI's record must show a read there refused. Recorded in council.txt as
+  # seatcheck.attack.
+  if [ "$SEAT_CHECK" -eq 1 ]; then
+    council_seat_check "$ROOT" "$RUN" "$STAGE"
+  else
+    council_seat_skip
+  fi
+  council_seat_record_into "$MANIFEST" attack
   council_say "cross-attack: $COUNT attacks in parallel, from $ROOT (effort $COUNCIL_ATTACK_EFFORT)"
   # shellcheck disable=SC2086
   council_run_parallel "$ROOT" "$STAGE" $JOBS
@@ -245,6 +259,14 @@ KEEP=$(grep -v -e '^model\.arbiter=' -e '^model\.arbiter\.from=' "$MANIFEST")
 COUNCIL_PHASE=arbitrate
 export COUNCIL_PHASE
 council_require_deny_used arbiter
+# The seat check for the arbiter, recorded as seatcheck.arbitrate; a rerun
+# with --arbitrate-only replaces those lines.
+if [ "$SEAT_CHECK" -eq 1 ]; then
+  council_seat_check "$ROOT" "$RUN" "$STAGE"
+else
+  council_seat_skip
+fi
+council_seat_record_into "$MANIFEST" arbitrate
 council_say "arbitration: running from $ROOT (effort $COUNCIL_ARBITER_EFFORT)"
 council_run_parallel "$ROOT" "$STAGE" "arbiter:arbiter"
 STATUS=$?
