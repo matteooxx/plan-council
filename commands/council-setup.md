@@ -74,8 +74,10 @@ connected, or should it be checked?
   `council-detect.sh --root <root>` in the background. It reports the OS, the
   invocation for each shell, the required tools, the CLIs, Codex's login state,
   which models actually answer, the agent roster, and whether the rule that
-  keeps the arbiter blind is honoured on this machine. The model probe makes
-  one one-word call per candidate model, one for the guard check, and, if
+  keeps the arbiter blind is honoured on this machine, whether a seat's reads
+  outside the context root are refused, and whether a seat can write. The model probe makes
+  one one-word call per candidate model, one long call for the guard check
+  and a second, short one when its write probe needs its control, and, if
   Codex is logged in, one Codex call asking for one word, made with the model
   and reasoning effort in the user's own Codex config (it can be `xhigh`), to
   read what its banner announces: say so first, since each costs a little and
@@ -87,15 +89,24 @@ Read the machine-readable summary at the end. Report what was found in plain
 terms, including anything that failed.
 
 - If `CLAUDE_INSTALLED=no`, stop: nothing else matters until it is installed.
-- `DENY_RULE_EFFECTIVE` is the verdict for the layout the plugin permits: a
-  run directory git ignores and tracks nothing in. The refused layout is
-  probed too and printed above the summary, but it does not change this value.
+- `DENY_RULE_EFFECTIVE` is the verdict for both layouts the canary plants: a
+  run directory git ignores, as `<root>/.council` is, and one in which git
+  hides nothing, as a run on a tracked `--out` path is. A leak in either makes
+  it `no`. Above the summary the canary prints each route by tool, spelling
+  and layout; a route git hid in the ignored layout is shown as hidden by git,
+  and the other layout tests the rule on it.
+- `OUTSIDE_ROOT_REFUSED` says whether a Claude seat's reads outside the
+  context root were refused, and `WRITE_REFUSED` whether a write through
+  `git show --output` was refused, beside a control on the flags of 0.4.0,
+  which were measured writing that way, that did write.
 - If `DENY_RULE_EFFECTIVE=no`, say plainly that the arbiter cannot be kept from
-  reading which planner wrote which plan on this machine, so that blindness
-  rests on the prompt alone. Let the user decide whether to continue.
-- If `DENY_RULE_EFFECTIVE=untested`, say that the check could not establish
-  whether the rule holds: neither that it does nor that it does not. It is not
-  a pass, and must not be reported as one.
+  reading which planner wrote which plan on this machine: nothing the plugin
+  enforces then keeps it blind, and no prompt asks it to stay out of the run
+  directory. Let the user decide whether to continue. Say a `no` in the other
+  two just as plainly.
+- If any of the three is `untested`, say that the check could not establish
+  whether it holds: neither that it does nor that it does not. It is not a
+  pass, and must not be reported as one.
 - If `CODEX=no` or `absent`, the second planner must be another Claude model.
 
 ## 4. Which models

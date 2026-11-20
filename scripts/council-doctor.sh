@@ -238,17 +238,17 @@ fi
 note "the three lines above are a text check of the config, not of the process."
 if [ -n "${COUNCIL_DENY_UNCOVERED:-}" ]; then
   note "the deny rule is a Claude Code permission rule and cannot reach:$COUNCIL_DENY_UNCOVERED"
-  note "with one of those as a planner, the attack phase's blindness rests on the"
-  note "prompt rather than on the code. Run council-detect.sh to see, route by route,"
-  note "what the rule does and does not stop where it does apply: measured 2026-11-18,"
-  note "it is matched against the text of a command and not the path that command"
-  note "resolves to. In the two spellings measured, the path written out and its"
-  note "last character replaced by a \"?\" glob, it stopped the file reader with"
-  note "the path written out, which is the only spelling the reader can take, and"
-  note "Glob and Grep in both; it did not stop a shell command spelling the path"
-  note "another way, and no other spelling was probed. That check can also come"
-  note "back with nothing established, which is not a pass."
+  note "with one of those as a planner, nothing the plugin enforces keeps it out of"
+  note "the run directory during the attack phase, and no prompt asks it to stay out:"
+  note "its side of the blind cross-attack rests on its own conduct."
 fi
+note "a Codex seat is not held to what a Claude seat is held to. Measured 2026-11-19, a measurement and not a property of Codex in general: under --sandbox read-only a Codex seat was refused a write, at the OS level and beside an inside control that succeeded, but read an absolute path outside the context root; a Claude seat could do neither. No deny rule reaches a Codex seat, and codex exec --help offers nothing that restricts reads."
+note "Run council-detect.sh to see, route by route and tool by tool, what the rule"
+note "does and does not stop where it does apply: it probes five spellings of the"
+note "run directory, and reads outside the root and a write, each beside a control"
+note "that must be reached, and it can come back untested, which is not a pass."
+note "The rule is matched against the text of a path, not the path it resolves to"
+note "(measured 2026-11-18)."
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
     command -v cygpath >/dev/null 2>&1 \

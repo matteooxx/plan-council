@@ -39,48 +39,22 @@ MANIFEST="$RUN/council.txt"
 [ -f "$MANIFEST" ] || council_die "not a council run (no council.txt): $RUN"
 [ -s "$RUN/brief.md" ] || council_die "brief.md missing or empty in $RUN"
 
-# --- A run directory git can read is refused ----------------------------------
-# No claude seat the plugin ships has a shell: $(council_seat_flags) gives it
-# exactly Glob, Grep and Read, and each one names Bash in --disallowedTools
-# (see the comment above planner_claude in config/council.conf). This gate is
-# for a seat that holds Bash all the same: the text check can read a
-# definition the shell does not run, and the per-run seat check does not test
-# Bash at all; which seats could get past both was not measured (see the
-# comment on $COUNCIL_DENY in config/council.conf). For such a seat the rule
-# that denies the run directory is matched against the text of a command, not
-# the path it resolves to, so a command that spells the path another way
-# walks past it (measured 2026-11-18), and git log, git show and git status
-# walk past it too. Those three read only what git has: git log and git show print what
-# git tracks, and git status names what it does not ignore. Under the default
-# layout ROOT/.council holds a .gitignore of "*" and nothing in it is
-# tracked, and there all three printed nothing about a run (measured
-# 2026-11-18). But council-plan.sh --out places a run anywhere, a tracked
-# path included, and there council.txt, which maps each letter to its
-# planner, is one git show away. This gate does nothing about a command that
-# spells the path another way, and nothing for a codex seat, which no rule
-# reaches and which was measured reading files by path, inside the root and
-# outside it (the comment above planner_codex); whether a codex seat can run
-# git show here was not measured.
-#
-# So git is asked, from inside the run directory, for every file in it that
-# it tracks (--cached) or does not ignore (--others --exclude-standard): the
-# files git log and git show can print and the ones git status would name.
-# Any answer at all stops the review, for the attacks and for
-# --arbitrate-only alike, since the arbiter is built like the claude
-# planners. A run directory outside every git work tree passes: there is
-# nothing there for git to print. There is no override, on purpose.
-#
-# Not checked: the history. A file that was committed and then removed from
-# the index stays readable to git log and git show, and this asks only about
-# the index and the working tree.
-if RUN_IN_GIT=$(cd "$RUN" && git rev-parse --is-inside-work-tree 2>/dev/null) \
-  && [ "$RUN_IN_GIT" = true ]; then
-  RUN_GIT_SEEN=$(cd "$RUN" && git ls-files --cached --others --exclude-standard -- .) \
-    || council_die "the run directory $RUN is inside a git work tree, and git could not be asked which files in it it tracks or does not ignore, so whether git log, git show and git status can read it is unknown. Nothing has been run."
-  if [ -n "$RUN_GIT_SEEN" ]; then
-    council_die "the run directory $RUN is inside a git work tree, and git tracks or does not ignore files in it (for example: $(printf '%s\n' "$RUN_GIT_SEEN" | head -n 5 | paste -s -d ' ' -)). No claude seat the plugin ships has a shell, but the seat check does not test Bash, so it would not stop a seat that holds it, and for such a seat the rule that denies it the run directory is matched against the text of a command, not the path it resolves to, so git log, git show and git status walk past it: git log and git show can print a tracked file there, council.txt included, which maps each letter to its planner, and git status can name any file there that git does not ignore. For such a seat the blindness the review phase claims would not hold. Move the run directory outside the repository and review it there, or place it where git ignores it and tracks nothing in it, as the default ROOT/.council layout does. A file there that was ever committed stays in the history whatever is done now. There is no option to skip this check. Nothing has been run."
-  fi
-fi
+# --- A run directory git can read is not refused ------------------------------
+# Until 2026-11-20 this script refused to review a run directory that git
+# tracked or did not ignore, so that git log, git show and git status could
+# not print council.txt, which maps each letter to its planner, to a claude
+# seat that held a shell. No seat the plugin ships has a shell. The gate was
+# removed because a measurement showed it protected nothing for a seat that
+# has one: on 2026-11-20 a claude -p seat with a shell (no
+# $(council_seat_flags), no --tools) and a Read(<dir>/**) deny rule on each
+# of two run directories printed the content of an ignored run's council.txt
+# with "cat .counci?/run1/council.txt" and with head, and that of a tracked
+# one with "cat run?/run2/council.txt", as it did with git show; "wc -c" on
+# the ignored run's path was the only command refused. The content
+# was one command away whether or not git could see the directory; the gate
+# only ever addressed whether git could. What protects the attribution now,
+# and what does not, is in the comment on $COUNCIL_DENY in
+# config/council.conf.
 ROOT=$(council_manifest_get "$MANIFEST" root)
 ROOT=$(council_absdir "$ROOT") || council_die "context root from council.txt no longer exists: $ROOT"
 

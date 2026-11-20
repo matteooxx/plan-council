@@ -485,6 +485,29 @@ for T_SH in $T_SHELLS; do
   t_count "$T_N council-review.sh --arbitrate-only, no head= in council.txt: the prompt" 1 "$P1" "HEAD: not recorded: this run was planned before plan-council recorded the repository"
   t_count "$T_N council-review.sh --arbitrate-only, no head= in council.txt: the prompt" 1 "$P1" "since planning: not known, because no HEAD at planning was recorded"
   t_lacks "$T_N council-review.sh --arbitrate-only, no head= in council.txt: the prompt" "$P1" "git diff --stat"
+
+  # A run directory git does not ignore, then one it tracks: reviewed like
+  # any other. The review refused both until 2026-11-20 (the comment where
+  # that refusal stood in council-review.sh says why it went).
+  R="$T_TMP/$T_N-unignored"
+  t_repo "$R"
+  t_plan "$T_SH" "$R" --out "$R/runs/run-1"
+  t_same "$T_N council-plan.sh --out on a path git does not ignore: exits" 0 "$T_RC"
+  T_RUN_UNIGNORED=$T_RUN
+  t_review "$T_SH" "$T_RUN_UNIGNORED"
+  t_same "$T_N council-review.sh, a run directory git does not ignore: exits" 0 "$T_RC"
+  t_lacks "$T_N council-review.sh, a run directory git does not ignore: its messages" "$T_TMP/review.err" "git tracks or does not ignore"
+  t_load
+  t_same "$T_N council-review.sh, a run directory git does not ignore: prompts sent" 3 "$T_NP"
+  t_count "$T_N council-review.sh, a run directory git does not ignore: a prompt names it" 1 "$P1" "?? runs/"
+  t_git "$R" add -f runs
+  t_git "$R" commit -q -m runs
+  _t_got=$(t_git "$R" ls-files runs | grep -c 'council\.txt$')
+  t_same "$T_N a run directory git tracks: council.txt is tracked" 1 "$_t_got"
+  t_review "$T_SH" "$T_RUN_UNIGNORED" --arbitrate-only
+  t_same "$T_N council-review.sh --arbitrate-only, a run directory git tracks: exits" 0 "$T_RC"
+  t_load
+  t_same "$T_N council-review.sh --arbitrate-only, a run directory git tracks: prompts sent" 1 "$T_NP"
 done
 
 # ---------------------------------------------------------------------------
