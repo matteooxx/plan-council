@@ -630,10 +630,20 @@ council_check_planners() {
 # word "claude" is in it, so a seat that delegates to a helper which runs
 # claude -- arbiter() { run_seat opus "$@"; } -- lands in
 # COUNCIL_DENY_UNCOVERED, sets no return code, and is checked for none of the
-# three requirements. Whether such a seat should be refused is a decision,
-# not made here.
+# three requirements. This function still does exactly that, and its return
+# code is unchanged, because planning and the attack phase consume it for
+# planner sets that hold Codex. Since 2026-11-21 council_arbiter_unjudged is
+# true when arbiter is in that list: review and assignment refuse on it, with
+# no option to skip, and the doctor reports a FAIL. The text cannot tell such
+# an arbiter from one that drives another CLI, so both are refused. Only that
+# one name is: planner_fable redefined that way, or a planner under a name of
+# the user's own, is still checked for nothing. A planner whose name holds
+# "claude" was never in this gap, since the definition line is part of the
+# text read.
 #
-# Sets COUNCIL_DENY_UNCOVERED to the functions the rule cannot reach, and
+# Sets COUNCIL_DENY_UNCOVERED to the functions in whose definition it found no
+# "claude": the ones the rule cannot reach, and the ones that reach claude
+# through another function, which the text cannot tell apart. Sets
 # COUNCIL_CHECK_CLAUDE to the ones it judged to drive claude, whose bodies it
 # read and found the word in: those are the seats council_seat_check probes.
 # Returns non-zero when a claude-driven function drops the rule, does not
@@ -674,7 +684,9 @@ council_check_planners() {
 #
 # Reading too little is not safe by default. A body that loses the word
 # "claude" counts as a function the deny rule cannot reach, which sets no
-# return code, so a short read can pass. Two of the conditions exist for that:
+# return code, so a short read of a planner can pass; an arbiter's that loses
+# the word is refused by review and assignment (council_arbiter_unjudged). Two
+# of the conditions exist for that:
 #   arbiter() { # ; }
 # ends in "; }" but the "#" comments the brace out and the body continues; and
 #   arbiter() { [ -n "$1" ] || { echo usage >&2; return 1; }
@@ -1347,6 +1359,34 @@ council_shadowed_message() {
     _sm_list="$_sm_list $_sm_fn at line ${_sm_rest%%:*}, defined again by the file sourced at line ${_sm_rest#*:};"
   done
   printf '%s' "in $COUNCIL_CONFIG_USED these functions are defined above the line that sources the plugin's config/council.conf, which defines them again, so the definition written there never runs:$_sm_list the plugin's runs instead, and that is the one the requirements were checked on. Move each definition below that line, or delete it. Nothing has been run."
+}
+
+# True when the last council_check_deny_used read the arbiter's definition and
+# found no "claude" in it, so none of the three requirements was checked for
+# it. council-review.sh and council-assign.sh refuse on it and council-doctor.sh
+# reports a FAIL; there is no option to skip, as there is none for a function
+# that could not be read. Decided by a council on 2026-11-21.
+#
+# It reads COUNCIL_DENY_UNCOVERED and calls nothing. It tests the one word
+# arbiter, not whether that list is empty: council-doctor.sh calls the check
+# once with the arbiter and every planner, and planner_codex, which holds no
+# "claude", is in the list on the default planner set.
+#
+# Every call of council_check_deny_used resets COUNCIL_DENY_UNCOVERED and
+# COUNCIL_CHECK_CLAUDE, and council_seat_check and council_seat_skip read
+# both. So no call of it may be placed between a phase's check and its seat
+# check or skip: the wrong seats would be probed, or recorded as unprobed.
+council_arbiter_unjudged() {
+  case " ${COUNCIL_DENY_UNCOVERED-} " in
+    *" arbiter "*) return 0 ;;
+  esac
+  return 1
+}
+
+# The refusal for that arbiter. One copy, used by council-review.sh and by
+# council-assign.sh, so the two cannot drift apart.
+council_arbiter_unjudged_message() {
+  printf '%s' "the arbiter in $COUNCIL_CONFIG_USED was read, and the word claude is not in its definition, so none of the three requirements was checked for it: the deny rule, \$(council_seat_flags) and Bash in --disallowedTools. The check reads the arbiter's own definition and does not follow a function it calls, so it cannot tell an arbiter that reaches claude through another function from one that drives another CLI, and it refuses both. Write the claude command line in arbiter itself, with all three, as config/council.conf does. Only the arbiter is refused for this: a planner with no claude in its definition is not refused, and is checked for nothing. There is no option to skip this check."
 }
 
 # Like council_check_deny_used, but refuses to start the run.

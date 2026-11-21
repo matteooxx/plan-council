@@ -2,8 +2,10 @@
 # Tests for the per-run seat check in ../lib.sh: the reader of the CLI's
 # permission_denials record (council_denials_read), the switch that makes a
 # seat write that record (council_seat_flags), the probe that calls each seat
-# (council_seat_check), the scripts that run it before their seats, and the
-# parallel runner's plumbing: prompt in, stdout and stderr out to their logs.
+# (council_seat_check), the scripts that run it before their seats, the
+# refusal by council-review.sh and council-assign.sh of an arbiter the text
+# check did not judge, and the parallel runner's plumbing: prompt in, stdout
+# and stderr out to their logs.
 #
 # Usage: sh scripts/tests/permission-denials.sh
 #        dash scripts/tests/permission-denials.sh
@@ -511,6 +513,23 @@ t_lacks "missing prompt: the runner's own stdout" "$T_PL/runner-np.out" "out:"
 echo "The scripts that run it"
 
 printf '# A brief\n\nPlan one small change.\n' > "$T_TMP/brief.md"
+printf '# A plan\n\nOne task.\n' > "$T_TMP/final-plan.md"
+# An arbiter that hands its claude call to a helper. The helper carries the
+# shipped arbiter's whole command line, so the seat would be blind; but the
+# arbiter's own definition holds no claude, so the text check judged nothing.
+cat > "$T_TMP/unjudged.conf" <<'CONF'
+. "$COUNCIL_PLUGIN_ROOT/config/council.conf"
+run_seat() {
+  claude -p --model "$1" \
+    --effort "$(council_effort)" \
+    --permission-mode default \
+    $(council_budget_flags) \
+    $(council_seat_flags) \
+    --disallowedTools Edit Write NotebookEdit Bash "$COUNCIL_DENY" "$COUNCIL_DENY2" \
+    > "$2"
+}
+arbiter() { run_seat "$COUNCIL_MODEL_ARBITER" "$@"; }
+CONF
 T_SHELLS="sh"
 [ -x /usr/bin/dash ] && T_SHELLS="$T_SHELLS /usr/bin/dash"
 for T_SH in $T_SHELLS; do
@@ -599,6 +618,66 @@ for T_SH in $T_SHELLS; do
   t_same "$T_N council-plan.sh --no-seat-check: exits" 0 "$T_RC"
   t_has "$T_N council-plan.sh --no-seat-check: council.txt" "$(tail -n 1 "$T_TMP/plan-skip.out")/council.txt" "seatcheck.plan=skipped"
   t_same "$T_N council-plan.sh --no-seat-check: calls carrying --output-format json" 0 "$(t_json_calls)"
+
+  # An arbiter the text check did not judge is refused before anything runs.
+  # Its own run, which nothing else reviews: a review that had written
+  # attack-*.md there would make any later one exit 1 for that reason.
+  T_UJ="$ROOT/.council/unjudged-$T_N"
+  T_RC=0
+  COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
+    "$T_SH" "$T_PLUGIN/scripts/council-plan.sh" "$T_TMP/brief.md" --root "$ROOT" --out "$T_UJ" \
+    > /dev/null 2> /dev/null || T_RC=$?
+  t_same "$T_N council-plan.sh, the run for an unjudged arbiter: exits" 0 "$T_RC"
+  cp "$T_UJ/council.txt" "$T_TMP/council-uj-$T_N.txt"
+  : > "$STUB_LOG"
+  T_RC=0
+  COUNCIL_CONFIG="$T_TMP/unjudged.conf" COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
+    "$T_SH" "$T_PLUGIN/scripts/council-review.sh" "$T_UJ" \
+    > /dev/null 2> "$T_TMP/review-uj.err" || T_RC=$?
+  t_same "$T_N council-review.sh, an arbiter with no claude in its definition: exits" 1 "$T_RC"
+  t_has "$T_N council-review.sh, an arbiter with no claude in its definition: stderr" "$T_TMP/review-uj.err" "the word claude is not in its definition"
+  t_has "$T_N council-review.sh, an arbiter with no claude in its definition: stderr" "$T_TMP/review-uj.err" "Nothing has been run"
+  t_same "$T_N council-review.sh, an arbiter with no claude in its definition: calls the stand-in recorded" 0 "$(t_calls)"
+  _t_got=$(ls -A "$T_UJ" | grep '^attack-' || true)
+  t_same "$T_N council-review.sh, an arbiter with no claude in its definition: attack files in the run" "" "$_t_got"
+  if cmp -s "$T_TMP/council-uj-$T_N.txt" "$T_UJ/council.txt"; then _t_got=identical; else _t_got=changed; fi
+  t_same "$T_N council-review.sh, an arbiter with no claude in its definition: council.txt" identical "$_t_got"
+
+  # The same under --arbitrate-only, on the run reviewed above, which has its
+  # attacks and an arbitration. That path rewrites council.txt and moves
+  # arbitration.md aside before it reaches the arbiter, so the refusal has to
+  # come first. A rerun writes the same bytes as the stand-in did before, so
+  # the file is marked: if it was moved and replaced, the mark is gone.
+  printf 'marker-%s\n' "$T_N" >> "$RUN/arbitration.md"
+  cp "$RUN/arbitration.md" "$T_TMP/arbitration-uj-$T_N.md"
+  cp "$RUN/council.txt" "$T_TMP/council-ao-$T_N.txt"
+  : > "$STUB_LOG"
+  T_RC=0
+  COUNCIL_CONFIG="$T_TMP/unjudged.conf" COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
+    "$T_SH" "$T_PLUGIN/scripts/council-review.sh" "$RUN" --arbitrate-only --no-seat-check \
+    > /dev/null 2> "$T_TMP/review-ao.err" || T_RC=$?
+  t_same "$T_N council-review.sh --arbitrate-only --no-seat-check, an arbiter with no claude in its definition: exits" 1 "$T_RC"
+  t_has "$T_N council-review.sh --arbitrate-only --no-seat-check, an arbiter with no claude in its definition: stderr" "$T_TMP/review-ao.err" "the word claude is not in its definition"
+  t_same "$T_N council-review.sh --arbitrate-only --no-seat-check, an arbiter with no claude in its definition: calls the stand-in recorded" 0 "$(t_calls)"
+  if cmp -s "$T_TMP/arbitration-uj-$T_N.md" "$RUN/arbitration.md"; then _t_got=identical; else _t_got=changed; fi
+  t_same "$T_N council-review.sh --arbitrate-only --no-seat-check, an arbiter with no claude in its definition: the marked arbitration.md" identical "$_t_got"
+  if cmp -s "$T_TMP/council-ao-$T_N.txt" "$RUN/council.txt"; then _t_got=identical; else _t_got=changed; fi
+  t_same "$T_N council-review.sh --arbitrate-only --no-seat-check, an arbiter with no claude in its definition: council.txt" identical "$_t_got"
+
+  # council-assign.sh calls the check with the arbiter alone, and gets 0 back
+  # for this one, so its refusal is a branch of its own. Each shell writes its
+  # own --out: an existing one is refused before the arbiter is reached.
+  : > "$STUB_LOG"
+  T_RC=0
+  COUNCIL_CONFIG="$T_TMP/unjudged.conf" TMPDIR="$T_TMP/tmp" \
+    "$T_SH" "$T_PLUGIN/scripts/council-assign.sh" "$T_TMP/final-plan.md" --root "$ROOT" \
+    --out "$T_TMP/assign-$T_N.md" > /dev/null 2> "$T_TMP/assign-uj.err" || T_RC=$?
+  t_same "$T_N council-assign.sh, an arbiter with no claude in its definition: exits" 1 "$T_RC"
+  t_same "$T_N council-assign.sh, an arbiter with no claude in its definition: calls the stand-in recorded" 0 "$(t_calls)"
+  grep '^plan-council: error:' "$T_TMP/assign-uj.err" > "$T_TMP/assign-uj.line"
+  t_has "$T_N council-assign.sh, an arbiter with no claude in its definition: the error line" "$T_TMP/assign-uj.line" "the word claude is not in its definition"
+  t_lacks "$T_N council-assign.sh, an arbiter with no claude in its definition: stderr" "$T_TMP/assign-uj.err" "this run continues"
+  t_lacks "$T_N council-assign.sh, an arbiter with no claude in its definition: stderr" "$T_TMP/assign-uj.err" "assigning tasks"
 done
 
 echo "House rule"
