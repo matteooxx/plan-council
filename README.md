@@ -319,9 +319,12 @@ lived.
 
 ### Seat functions and the order of lines
 
-Before a phase starts, each seat function is checked for what every seat must
-carry: `"$COUNCIL_DENY"`, `$(council_seat_flags)` unquoted, and `Bash` in
-`--disallowedTools`. It is a text check of the config, and it reads the
+Before a phase starts, each seat function whose definition holds the word
+`claude` is checked for what such a seat must carry: `"$COUNCIL_DENY"`,
+`$(council_seat_flags)` unquoted, and `Bash` in `--disallowedTools`. A
+function without that word is checked for none of the three: a planner like
+that runs unchecked, and an `arbiter` like that is refused (the last point
+below). It is a text check of the config, and it reads the
 definition the shell keeps, which is the last one executed. So where a line
 sits matters:
 
@@ -356,6 +359,18 @@ sits matters:
   must also end on the line where the shell closes the body, which a heredoc
   or a quoted string can move. A body the check cannot read to its end is
   unknown.
+- **The `arbiter`'s `claude` command line goes in `arbiter` itself.** The
+  check reads the arbiter's own definition and does not follow a function it
+  calls, so `arbiter() { run_seat opus "$@"; }` holds no `claude`, and none
+  of the three requirements is checked for it, even when `run_seat` carries
+  all three. The check cannot tell that from an `arbiter` that drives another
+  CLI, and refuses both: `council-review.sh` and `council-assign.sh` stop
+  before anything runs, `council-doctor.sh` reports a `FAIL`, and there is no
+  option to skip it. This holds for the `arbiter` and for no planner: a
+  planner written that way looks to the check like the Codex planner, and
+  runs unchecked. `planner_claude` and `planner_claude_alt` are not in that
+  position, because the definition line, with its name, is part of the text
+  read.
 
 Unknown is refused, there is no option to skip it, and the message names the
 line. The check reads text, not the running shell, and it can still be wrong:
@@ -383,8 +398,8 @@ place it, `--restricted` alone refuses the read with no deny rule at all, and
 the record says that it does not show a deny rule did it. It shows that one
 read, in a separate process, just before the phase, was refused; it is no
 record of the calls that follow. Nor does it check that `Bash` is denied.
-A seat whose function does not run `claude` itself is not probed, and the
-record lists it. `--no-seat-check`
+A planner whose function does not run `claude` itself is not probed, and the
+record lists it; an `arbiter` like that does not get this far. `--no-seat-check`
 skips the check, and `council.txt` then records `skipped`. `council-assign.sh`
 does not run it.
 
@@ -412,8 +427,8 @@ there for twenty minutes, and on another machine the numbers will differ.
 They write only to a temporary
 directory, which they remove, and they run `council-assign.sh` and
 `council-doctor.sh` with a stand-in `claude` first on `PATH`, so no model is
-called; `permission-denials.sh` runs `council-plan.sh` and
-`council-review.sh` the same way, and `canary.sh` runs `council-detect.sh`
+called; `permission-denials.sh` runs `council-plan.sh`,
+`council-review.sh` and `council-assign.sh` the same way, and `canary.sh` runs `council-detect.sh`
 with a stand-in `claude` that carries out the canary's probes itself and a
 stand-in `codex` that is not logged in. When `bash` is installed, one section of
 `definitions.sh` sources every test config in
@@ -563,6 +578,10 @@ The contract every planner function keeps:
 
 The same function is reused for that planner's cross-attack. The `arbiter`
 function, which also drafts the assignment table, has the same contract.
+Its definition must also hold its own `claude` command line, so an `arbiter`
+that drives another CLI is refused by `council-review.sh` and
+`council-assign.sh`, with no option to skip: unlike a planner, the arbiter
+cannot be Codex or a tool of your own.
 
 ### Two Claude models instead of Codex
 
@@ -985,7 +1004,12 @@ agreeing. One run is not a track record.
   enforces keeps it out of the run directory during the attack phase, and no
   prompt in `prompts/` asks a seat to stay out of it. The seat check does not
   call a Codex seat either. `/council-doctor` names every function the rule
-  cannot cover.
+  cannot cover. That list also holds a function that reaches `claude` through
+  another function: the check does not follow the call, so it cannot tell
+  such a function from one that drives another CLI, and none of the three
+  requirements is checked for it. That is refused for the `arbiter` and for
+  no planner: `planner_fable` redefined that way, or a planner under a name
+  of your own, still runs unchecked.
   A function that drives `claude` and simply **drops** the rule is a different
   case, and no longer a tolerated one: planning and both review phases refuse
   to start, naming the function, before a single model run is paid for. Only

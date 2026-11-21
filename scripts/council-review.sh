@@ -60,6 +60,25 @@ ROOT=$(council_absdir "$ROOT") || council_die "context root from council.txt no 
 
 council_load_config "$ROOT" "$PLUGIN_ROOT"
 type arbiter >/dev/null 2>&1 || council_die "no arbiter function in $COUNCIL_CONFIG_USED"
+# An arbiter in whose definition the text check finds no claude was checked
+# for none of the three requirements, and is refused, with no option to skip
+# (council_arbiter_unjudged in lib.sh). It is refused here, at the top, for
+# two reasons: before the attacks, which are paid for; and before the rewrite
+# of council.txt and the move of arbitration.md further down, which come
+# before the arbiter's own check and run under --arbitrate-only too. Nothing
+# above this line writes to RUN. The check's stderr is dropped: for such an
+# arbiter it prints nothing, and any other fault is refused at the arbiter's
+# own check below.
+#
+# Never move these lines, or add any call of council_check_deny_used, between
+# a phase's check and its seat check or skip below (council_require_deny_used
+# "$FNS" and council_require_deny_used arbiter, each followed by
+# council_seat_check or council_seat_skip). Every call resets the lists those
+# two read, and the wrong seats would be probed or recorded.
+council_check_deny_used arbiter 2> /dev/null
+if council_arbiter_unjudged; then
+  council_die "$(council_arbiter_unjudged_message) Nothing has been run, and nothing in $RUN has been changed."
+fi
 
 LETTERS=$(sed -n 's/^planner\.\([A-H]\)=.*/\1/p' "$MANIFEST" | tr '\n' ' ')
 COUNT=0
@@ -306,6 +325,8 @@ repository_blocks > "$STAGE/repository-arbiter.md" || council_die "cannot write 
 COUNCIL_PHASE=arbitrate
 export COUNCIL_PHASE
 council_require_deny_used arbiter
+# An arbiter with no claude in its definition was refused at the top of this
+# script; this check returns 0 for it.
 # The seat check for the arbiter, recorded as seatcheck.arbitrate; a rerun
 # with --arbitrate-only replaces those lines.
 if [ "$SEAT_CHECK" -eq 1 ]; then

@@ -821,6 +821,71 @@ t_var "a one-line function not shipped, above the source line" "arbiter planner_
 t_var "a one-line function not shipped, above the source line" "arbiter planner_gemini" COUNCIL_DENY_UNCOVERED " planner_gemini"
 t_rc "a one-line function not shipped, above the source line" "arbiter planner_gemini" 0
 
+echo "An arbiter the check did not judge"
+
+# t_unjudged LABEL EXPECTED -- after t_check, council_arbiter_unjudged answers
+# EXPECTED, yes or no.
+t_unjudged() {
+  if council_arbiter_unjudged 2> /dev/null; then _t_got=yes; else _t_got=no; fi
+  t_same "$1: council_arbiter_unjudged" "$2" "$_t_got"
+}
+
+# An arbiter that hands the claude call to a helper. The helper carries all
+# three requirements, but the check reads the arbiter's own definition, which
+# holds no claude, so none of them was checked for it.
+F=$(t_conf unjudged-one-line <<'CONF'
+. "$COUNCIL_PLUGIN_ROOT/config/council.conf"
+run_seat() {
+  claude -p --model "$1" $(council_seat_flags) --disallowedTools Bash "$COUNCIL_DENY" "$COUNCIL_DENY2" > "$2"
+}
+arbiter() { run_seat opus "$@"; }
+CONF
+)
+T_F1=$F
+t_check "$F" arbiter
+t_var "an arbiter that calls a helper" arbiter COUNCIL_DENY_UNCOVERED " arbiter"
+t_rc "an arbiter that calls a helper" arbiter 0
+_t_got=$(cat "$T_TMP/stderr")
+t_same "an arbiter that calls a helper: council_check_deny_used arbiter prints on stderr" "" "$_t_got"
+t_unjudged "an arbiter that calls a helper" yes
+_t_msg=$(council_arbiter_unjudged_message 2> /dev/null)
+for _t_w in "the word claude is not in its definition" "Write the claude command line in arbiter itself" "There is no option to skip"; do
+  case "$_t_msg" in
+    *"$_t_w"*) _t_got=present ;;
+    *) _t_got=absent ;;
+  esac
+  t_same "an arbiter that calls a helper: council_arbiter_unjudged_message holds [$_t_w]" present "$_t_got"
+done
+# It names one role, and claims nothing for the others.
+for _t_w in " every " " any "; do
+  case "$_t_msg" in
+    *"$_t_w"*) _t_got=present ;;
+    *) _t_got=absent ;;
+  esac
+  t_same "an arbiter that calls a helper: council_arbiter_unjudged_message holds [$_t_w]" absent "$_t_got"
+done
+
+# An arbiter that drives another CLI looks the same to the check.
+F=$(t_conf unjudged-other-cli <<'CONF'
+. "$COUNCIL_PLUGIN_ROOT/config/council.conf"
+arbiter() {
+  codex exec --sandbox read-only --skip-git-repo-check --output-last-message "$1" - > /dev/null
+}
+CONF
+)
+t_check "$F" arbiter
+t_unjudged "an arbiter that drives another CLI" yes
+
+# One word, not a list that is not empty: a planner with no claude in its
+# definition lands in the same list, beside an arbiter that was judged, as in
+# the doctor's single call.
+t_check "$T_TMP/one-line-own-above.conf" "arbiter planner_gemini"
+t_unjudged "a judged arbiter beside a planner with no claude" no
+
+# An arbiter the reader leaves unread is unknown, refused on that ground.
+t_check "$T_TMP/dquote.conf" arbiter
+t_unjudged "an arbiter left unread" no
+
 echo "A definition that may not run, after one that does"
 
 F=$(t_conf cond-def-after-def <<'CONF'
@@ -1797,6 +1862,32 @@ PATH="$T_TMP/bin:$PATH" TMPDIR="$T_TMP/tmp" COUNCIL_CONFIG="$T_TMP/shadowed.conf
   > "$T_TMP/doctor.out" 2> /dev/null
 if grep -q '^  FAIL  arbiter is defined at line 1 of ' "$T_TMP/doctor.out"; then _t_got=reported; else _t_got=silent; fi
 t_same "a seat defined above the source line: council-doctor.sh stdout" reported "$_t_got"
+
+# An arbiter the text check did not judge: the doctor names it, and no ok line
+# speaks for it. codex is a planner here, and its definition holds no claude
+# either, so a test of the whole list rather than of the word arbiter shows in
+# the second run, on the shipped config.
+PATH="$T_TMP/bin:$PATH" TMPDIR="$T_TMP/tmp" COUNCIL_CONFIG="$T_F1" COUNCIL_PLANNERS="claude codex" \
+  sh "$T_PLUGIN/scripts/council-doctor.sh" --root "$T_TMP/root" --no-model-check \
+  > "$T_TMP/doctor-unjudged.out" 2> /dev/null
+if grep -q "^  FAIL  the arbiter's definition was read" "$T_TMP/doctor-unjudged.out"; then _t_got=reported; else _t_got=silent; fi
+t_same "an arbiter that calls a helper: council-doctor.sh stdout, a FAIL for it" reported "$_t_got"
+if grep -q -x -F '  ok    every claude planner passes $COUNCIL_DENY to its CLI' "$T_TMP/doctor-unjudged.out"; then _t_got=present; else _t_got=absent; fi
+t_same "an arbiter that calls a helper: council-doctor.sh stdout, the ok line for the planners alone" present "$_t_got"
+_t_got=$(grep -c '^  ok    .* and the arbiter ' "$T_TMP/doctor-unjudged.out")
+t_same "an arbiter that calls a helper: council-doctor.sh stdout, ok lines that speak for the arbiter" 0 "$_t_got"
+_t_got=$(grep '^  note  the text check found no claude in the definition of:' "$T_TMP/doctor-unjudged.out")
+t_same "an arbiter that calls a helper: council-doctor.sh stdout, the note" "  note  the text check found no claude in the definition of: planner_codex" "$_t_got"
+
+PATH="$T_TMP/bin:$PATH" TMPDIR="$T_TMP/tmp" COUNCIL_CONFIG="$T_PLUGIN/config/council.conf" COUNCIL_PLANNERS="claude codex" \
+  sh "$T_PLUGIN/scripts/council-doctor.sh" --root "$T_TMP/root" --no-model-check \
+  > "$T_TMP/doctor-shipped.out" 2> /dev/null
+_t_got=$(grep -c '^  ok    every claude planner and the arbiter ' "$T_TMP/doctor-shipped.out")
+t_same "the shipped config with codex as a planner: council-doctor.sh stdout, ok lines for the planners and the arbiter" 3 "$_t_got"
+if grep -q "^  FAIL  the arbiter's definition was read" "$T_TMP/doctor-shipped.out"; then _t_got=reported; else _t_got=silent; fi
+t_same "the shipped config with codex as a planner: council-doctor.sh stdout, a FAIL for the arbiter" silent "$_t_got"
+_t_got=$(grep '^  note  the text check found no claude in the definition of:' "$T_TMP/doctor-shipped.out")
+t_same "the shipped config with codex as a planner: council-doctor.sh stdout, the note" "  note  the text check found no claude in the definition of: planner_codex" "$_t_got"
 
 echo
 echo "$T_PASS passed, $T_FAIL failed"
