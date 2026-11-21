@@ -114,7 +114,11 @@ export COUNCIL_DENY COUNCIL_DENY2 COUNCIL_PHASE
 # sources the plugin's config, which defines it again, stops it too: that
 # definition never runs, which is neither attribution nor capability but the
 # command line its author wrote not being the one that runs, and no phase
-# continues on that (see council_shadowed_message in lib.sh).
+# continues on that (see council_shadowed_message in lib.sh). An arbiter in
+# whose definition the check found no claude stops it as well, in a branch of
+# its own after this block, because the check returns 0 for it: none of the
+# three requirements was checked, capability included (see
+# council_arbiter_unjudged in lib.sh).
 if ! council_check_deny_used arbiter; then
   if [ -n "$COUNCIL_CHECK_UNKNOWN" ]; then
     council_die "$(council_unread_message)"
@@ -126,6 +130,9 @@ if ! council_check_deny_used arbiter; then
     council_die "the arbiter, which drafts the assignment, does not carry what every seat must: put \$(council_seat_flags), unquoted, on its claude command line and Bash in its --disallowedTools, as config/council.conf does. The assignment does not depend on attribution, but it does depend on what the session can do."
   fi
   council_say "the deny rule is about attribution and nothing here depends on it, so this run continues; the review phases would have refused to start."
+fi
+if council_arbiter_unjudged; then
+  council_die "$(council_arbiter_unjudged_message) The assignment depends on what the session can do, and nothing was checked. Nothing has been run."
 fi
 council_say "assigning tasks (assigner: the configured arbiter, from $ROOT, effort $COUNCIL_ASSIGN_EFFORT)"
 council_run_parallel "$ROOT" "$STAGE" "assign:arbiter"

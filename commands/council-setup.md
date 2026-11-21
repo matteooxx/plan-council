@@ -356,7 +356,10 @@ shipped ones do: without it the function loads the host's settings, hooks and
 connector tools, and answers a different question from the seats the plugin
 ships. It must also name `Bash` in its `--disallowedTools`, as the shipped
 ones do; the text check refuses a function that does not, and the seat check
-does not test it.
+does not test it. Do not rewrite `arbiter` to call a helper or another CLI:
+its `claude` command line must stand in its own definition, or review and
+assignment refuse it, the doctor in the next step reports a `FAIL`, and there
+is no option to skip.
 
 Then run `council-doctor.sh --root <root> --no-model-check` and show the
 result. It must load the new config and report the chosen planners. Fix

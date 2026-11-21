@@ -191,6 +191,8 @@ FNS="arbiter"
 for p in $COUNCIL_PLANNERS; do FNS="$FNS planner_$p"; done
 # Three requirements, each reported on its own line. A text check of the
 # config: it reads each function's definition, not the process it starts.
+# One call, and every result below is read from it: a second call would reset
+# the lists the lines below report.
 council_check_deny_used "$FNS" 2>/dev/null
 # A function whose definition was not found was checked for nothing, so the
 # ok lines below must not speak for it.
@@ -203,6 +205,23 @@ if [ -n "${COUNCIL_CHECK_UNKNOWN-}" ]; then
 $(council_unknown_reasons)
 EOF
   SCOPE="every claude function whose definition was read"
+fi
+# An arbiter whose definition was read and holds no claude was checked for
+# none of the three, and review and assignment refuse it, so the ok lines
+# below must not speak for it either. After the branch above, so that they
+# still leave out a planner that was not read: such an arbiter is never
+# unknown as well, so what that branch listed is planners.
+if council_arbiter_unjudged; then
+  bad "the arbiter's definition was read and the word claude is not in it, so none of the"
+  bad "three requirements below was checked for it. The check does not follow a function it"
+  bad "calls, so it cannot tell one that reaches claude that way from one that drives another"
+  bad "CLI. Review and assignment refuse it, with no option to skip. Write the claude command"
+  bad "line in arbiter itself, with all three, as config/council.conf does."
+  if [ -n "${COUNCIL_CHECK_UNKNOWN-}" ]; then
+    SCOPE="every claude planner whose definition was read"
+  else
+    SCOPE="every claude planner"
+  fi
 fi
 # A definition above the line that sources the plugin's config, which
 # defines the function again, never runs. The plugin's runs, and the lines
@@ -236,11 +255,20 @@ else
   bad "Add Bash there, as config/council.conf does."
 fi
 note "the three lines above are a text check of the config, not of the process."
-if [ -n "${COUNCIL_DENY_UNCOVERED:-}" ]; then
-  note "the deny rule is a Claude Code permission rule and cannot reach:$COUNCIL_DENY_UNCOVERED"
-  note "with one of those as a planner, nothing the plugin enforces keeps it out of"
-  note "the run directory during the attack phase, and no prompt asks it to stay out:"
-  note "its side of the blind cross-attack rests on its own conduct."
+# Planners only: an arbiter in that list was reported above, as a FAIL.
+_unc=""
+for _u in ${COUNCIL_DENY_UNCOVERED-}; do
+  [ "$_u" = arbiter ] || _unc="$_unc $_u"
+done
+if [ -n "$_unc" ]; then
+  note "the text check found no claude in the definition of:$_unc"
+  note "such a planner is not refused, and none of the three requirements was checked for it."
+  note "If it drives another CLI, the deny rule, a Claude Code permission rule, cannot reach"
+  note "it; if it reaches claude through another function, the check did not follow it there"
+  note "and does not know what that function passes. With a planner driving another CLI,"
+  note "nothing the plugin enforces keeps it out of the run directory during the attack"
+  note "phase, and no prompt asks it to stay out: its side of the blind cross-attack rests"
+  note "on its own conduct."
 fi
 note "a Codex seat is not held to what a Claude seat is held to. Measured 2026-11-19, a measurement and not a property of Codex in general: under --sandbox read-only a Codex seat was refused a write, at the OS level and beside an inside control that succeeded, but read an absolute path outside the context root; a Claude seat could do neither. No deny rule reaches a Codex seat, and codex exec --help offers nothing that restricts reads."
 note "Run council-detect.sh to see, route by route and tool by tool, what the rule"
