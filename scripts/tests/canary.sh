@@ -20,8 +20,8 @@
 # resolving ".." and case, and one outside the working directory under
 # --restricted. Its Glob lists git-ignored files and drops denied ones and
 # its Grep drops both, as an arbiter found from its own seat (the comment
-# above canary_run in council-detect.sh). Bash is refused when it is denied
-# by name. STUB_* variables make it misbehave on purpose, one route at a
+# above canary_run in council-detect.sh). Bash is absent when it is denied by
+# name, and the stub answers as the CLI does, with no such tool. STUB_* variables make it misbehave on purpose, one route at a
 # time. A stand-in "codex" reports that it is not logged in, so it is never
 # called. Everything is written to a temporary directory, removed on exit.
 set -u

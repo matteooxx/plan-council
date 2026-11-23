@@ -74,6 +74,12 @@ council_deny_rule() {
 # "pwd; ls" were all refused, so the arbiter could verify nothing and said so.
 # A rule naming a directory that does not exist matches nothing, which is
 # exactly what is wanted when there are no earlier runs to hide.
+# Not covered, and declared rather than closed: an earlier run that
+# council-plan.sh --out placed outside ROOT/.council. This rule names only
+# ROOT/.council, and a read inside the context root is allowed, so a claude
+# seat can read the council.txt of such a run inside the root, which gives
+# away which planner wrote which plan (council-review.sh says so above
+# COUNCIL_DENY2). The attribution of those runs is not protected.
 council_deny_all_runs() {
   council_deny_rule "$1/.council"
 }
@@ -1642,8 +1648,10 @@ council_budget_flags() {
 #     and both wrote the file.
 #   - --tools is exclusive: with --tools Read,Glob,Grep the tool inventory came
 #     back as exactly Glob, Grep, Read.
-#   - A tool denied by name is removed: with Bash in --disallowedTools it was
-#     refused, "the Bash tool isn't available in this session".
+#   - A tool denied by name is removed: with Bash in --disallowedTools the
+#     session reported "the Bash tool isn't available in this session". It is
+#     absent, not refused on use, so nothing is recorded for it (see the
+#     comment above council_seat_check).
 #   - --restricted on its own: a read of an absolute path outside the root was
 #     refused, one inside it allowed (863 lines). On its own it does not
 #     remove Write, Edit, NotebookEdit, Agent, WebSearch or the worktree tools;
@@ -2205,6 +2213,21 @@ council_seat_unplant() {
 # never says the deny rule is in force, and nothing here is verified beyond
 # one call: it shows that a read of the run directory through this seat was
 # refused by the CLI, in a separate process, just before the run.
+#
+# What this check cannot test, and why not to try: that Bash is denied.
+# Measured 2026-11-23, three calls with --output-format json. With the
+# shipped seat flags (--tools Read,Glob,Grep, and Bash in --disallowedTools),
+# Bash was absent, the seat answered NO SHELL TOOL, and permission_denials
+# was empty. With no --tools and Bash denied by name, the same: absent,
+# NO SHELL TOOL, empty. The control, with no --tools and Bash allowed, ran
+# the command from the same prompt and printed its output, so the prompt
+# does elicit a shell run when the tool is there. A tool denied by name is
+# absent from the session, not refused on use, so no refusal happens and the
+# CLI has nothing to record. A path rule on Read is the opposite: the
+# tool stays present, and the CLI records a refusal when a read hits the
+# rule. That is why the deny rule can be checked here and Bash cannot. A pass
+# does not verify that Bash is absent; its absence cannot be read from the
+# CLI's record.
 #
 # Seats in COUNCIL_DENY_UNCOVERED, whose definition the text check did not
 # find "claude" in, are not probed: neither the deny rule nor this check
