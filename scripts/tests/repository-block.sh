@@ -261,7 +261,11 @@ mkdir -p "$T_TMP/bin" "$T_TMP/tmp" "$T_TMP/in"
 cat > "$T_TMP/bin/claude" <<'STUB'
 #!/bin/sh
 # Stand-in claude for scripts/tests/repository-block.sh. See that file.
-cat > "$STUB_IN/in.$$"
+# The name carries the phase as well as the pid: an attack stand-in and the
+# arbiter one can share a pid, because Cygwin reuses a freed one and the
+# arbiter runs after the attacks. With the pid alone, one capture then
+# overwrote another and the suite failed 5 assertions once, intermittently.
+cat > "$STUB_IN/in.${COUNCIL_PHASE:-none}.$$"
 i=0
 while [ "$i" -lt 12 ]; do
   echo "Plain answer line $i, written as text, as a seat writes a plan or an attack."
