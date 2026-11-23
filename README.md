@@ -651,14 +651,23 @@ refuses to plan or review with a Claude seat that lacks the deny rule, and
 offers no way to skip that; Codex cannot carry that rule, so it is a seat you
 opt into rather than one nobody asked for.
 
-There is a plainer reason too. Codex is optional, and nothing checks for its
-binary before a run: the pre-flight asks only whether each planner's function
-exists. Read in the code and not run: on a machine without Codex, the old
-default paid for the Claude planner's seat check, then waited for every
-planner, the Claude one included, and exited 1. **With two Claude planners, a
-user without Codex gets a default run that can finish.** The change adds no
-binary check, so a Codex seat you choose without installing Codex still fails
-that way.
+There is a plainer reason too. Codex is optional, and when the default was
+decided nothing checked for its binary before a run: the pre-flight asked only
+whether each planner's function existed. Read in the code and not run: on a
+machine without Codex, the old default paid for the Claude planner's seat
+check, then waited for every planner, the Claude one included, and exited 1.
+**With two Claude planners, a user without Codex gets a default run that can
+finish.**
+
+Since 2026-11-23 the binary is checked. Planning and review refuse, before
+anything is paid, a seat whose definition names `claude` or `codex` when that
+CLI is not on PATH. The CLI is read from the function's definition, not from
+the planner's name, so `planner_claude_alt` needs `claude`. Before that check,
+with stand-ins in `scripts/tests/permission-denials.sh` and Codex a planner but
+not installed, `council-plan.sh` called the stand-in `claude` twice, the seat
+check and the planner, and made the run directory; now it calls nothing. A
+planner whose definition names neither CLI is noted, not refused, so one you
+add for another CLI still fails only when it runs if that CLI is missing.
 
 **What it costs**, as a fresh install would notice it:
 

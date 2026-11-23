@@ -17,9 +17,13 @@
 # without it. Three fixtures there are known open: the scan passes them while
 # bash runs another file's seat. One fixture, an alias for ".", is kept out of
 # that comparison and run under sh and dash with a stand-in "claude" instead.
-# The last section runs council-assign.sh and council-doctor.sh, under sh, with a
-# stand-in "claude" first on PATH that records that it was called and fails;
-# no model is called and nothing outside that directory is written.
+# The section after the house rule runs council-assign.sh and council-doctor.sh,
+# under sh, with a stand-in "claude" first on PATH that records that it was
+# called and fails; no model is called and nothing outside that directory is
+# written. The last section reads which CLI a planner's definition names
+# (council_check_clis): it runs council_check_planners and council-doctor.sh
+# with a PATH from which every directory holding a claude or a codex is left
+# out, and stand-ins put back where a row needs one.
 #
 # These test the text check, not the process a function starts.
 set -u
@@ -1904,6 +1908,156 @@ _t_got=$(grep '^  ok    planners: ' "$T_TMP/doctor-default.out")
 t_same "no project config: council-doctor.sh stdout, the planners line" "  ok    planners: claude claude_alt" "$_t_got"
 _t_got=$(grep -c '^  note  the text check found no claude in the definition of:' "$T_TMP/doctor-default.out")
 t_same "no project config: council-doctor.sh stdout, notes on an uncovered planner" 0 "$_t_got"
+
+echo "The CLI a planner drives"
+
+# council_check_planners refuses a planner whose definition names a known CLI
+# that command -v does not find, before anything is paid, and only notes one
+# whose definition names none. The CLI is read from the definition, never
+# from the planner's name: planner_claude_alt drives claude, and there is no
+# claude_alt binary to find. These run the check in a subshell, with a PATH
+# from which every directory holding a claude or a codex has been left out,
+# and a stand-in claude, which is never called, put back where a row needs
+# one.
+
+# t_path_without NAME... -- PATH with every directory left out that holds
+# NAME or NAME.exe for one of the NAMEs.
+t_path_without() {
+  _t_out=""
+  _t_ifs=$IFS
+  IFS=:
+  set -f
+  for _t_d in $PATH; do
+    _t_keep=1
+    for _t_n in "$@"; do
+      if [ -e "$_t_d/$_t_n" ] || [ -e "$_t_d/$_t_n.exe" ]; then _t_keep=0; fi
+    done
+    [ "$_t_keep" = 0 ] || _t_out="$_t_out${_t_out:+:}$_t_d"
+  done
+  set +f
+  IFS=$_t_ifs
+  printf '%s\n' "$_t_out"
+}
+
+# t_planners LABEL CONF PLANNERS PATH -- council_check_planners, in a
+# subshell, with CONF as the config in use, this plugin as the plugin, and
+# PATH as the PATH. Its exit status goes to T_RC, its stderr to
+# $T_TMP/planners.err.
+t_planners() {
+  T_RC=0
+  (
+    COUNCIL_CONFIG_USED=$2
+    COUNCIL_PLUGIN_ROOT=$T_PLUGIN
+    COUNCIL_PLANNERS=$3
+    PATH=$4
+    council_check_planners
+  ) 2> "$T_TMP/planners.err" || T_RC=$?
+}
+
+# t_err_has LABEL TEXT -- $T_TMP/planners.err holds TEXT, as a fixed string.
+t_err_has() {
+  if grep -F -q -e "$2" "$T_TMP/planners.err"; then _t_got=present; else _t_got="absent: $(head -c 400 "$T_TMP/planners.err")"; fi
+  t_same "$1: stderr holds [$2]" present "$_t_got"
+}
+
+planner_codex() { :; }
+planner_fable() { :; }
+T_NOCLI=$(t_path_without claude codex)
+mkdir -p "$T_TMP/clibin" "$T_TMP/codexbin"
+printf '#!/bin/sh\n: > "%s/clibin-called"\nexit 1\n' "$T_TMP" > "$T_TMP/clibin/claude"
+printf '#!/bin/sh\n: > "%s/codexbin-called"\nexit 1\n' "$T_TMP" > "$T_TMP/codexbin/codex"
+chmod +x "$T_TMP/clibin/claude" "$T_TMP/codexbin/codex"
+T_SHIPPED="$T_PLUGIN/config/council.conf"
+if PATH=$T_NOCLI command -v claude > /dev/null 2>&1 || PATH=$T_NOCLI command -v codex > /dev/null 2>&1; then
+  echo "skip  no PATH could be made here without claude and codex, so the refusal of a missing CLI was not tested"
+else
+
+  # The shipped default, claude and claude_alt, with claude installed. A check
+  # keyed on the planner's name would look for claude_alt and refuse it.
+  t_planners "default planners, claude installed" "$T_SHIPPED" "claude claude_alt" "$T_TMP/clibin:$T_NOCLI"
+  t_same "default planners, claude installed: council_check_planners exits" 0 "$T_RC"
+  t_same "default planners, claude installed: council_check_planners stderr" "" "$(cat "$T_TMP/planners.err")"
+
+  # The same with claude missing: both planners drive it.
+  t_planners "default planners, claude missing" "$T_SHIPPED" "claude claude_alt" "$T_NOCLI"
+  t_same "default planners, claude missing: council_check_planners exits" 1 "$T_RC"
+  t_err_has "default planners, claude missing" "plan-council: error: a CLI is not installed here (command -v did not find it on PATH): planner_claude drives claude; planner_claude_alt drives claude. "
+  t_err_has "default planners, claude missing" "Nothing has been run."
+
+  # Codex as a planner, codex missing and claude installed: only codex named.
+  t_planners "claude and codex, codex missing" "$T_SHIPPED" "claude codex" "$T_TMP/clibin:$T_NOCLI"
+  t_same "claude and codex, codex missing: council_check_planners exits" 1 "$T_RC"
+  t_err_has "claude and codex, codex missing" "(command -v did not find it on PATH): planner_codex drives codex. "
+  if grep -q 'planner_claude drives' "$T_TMP/planners.err"; then _t_got=named; else _t_got=not-named; fi
+  t_same "claude and codex, codex missing: planner_claude in the refusal" not-named "$_t_got"
+
+  # The same with codex installed: nothing to refuse.
+  t_planners "claude and codex, both installed" "$T_SHIPPED" "claude codex" "$T_TMP/clibin:$T_TMP/codexbin:$T_NOCLI"
+  t_same "claude and codex, both installed: council_check_planners exits" 0 "$T_RC"
+  t_same "claude and codex, both installed: council_check_planners stderr" "" "$(cat "$T_TMP/planners.err")"
+
+  # A project config that sets nothing and sources the plugin's: the
+  # definitions that run are the plugin's, read through that branch.
+  F=$(t_conf sources-plugin <<'CONF'
+. "$COUNCIL_PLUGIN_ROOT/config/council.conf"
+CONF
+)
+  t_planners "a config that sources the plugin's, codex missing" "$F" "claude codex" "$T_TMP/clibin:$T_NOCLI"
+  t_same "a config that sources the plugin's, codex missing: council_check_planners exits" 1 "$T_RC"
+  t_err_has "a config that sources the plugin's, codex missing" ": planner_codex drives codex. "
+
+  # A planner for another CLI is noted, not refused: the plugin documents
+  # adding one. Its CLI is missing here too, and that is not checked.
+  F=$(t_conf other-cli <<'CONF'
+planner_claude() {
+  claude -p > "$1"
+}
+planner_gemini() {
+  gemini --model m > "$1"
+}
+CONF
+)
+  t_planners "a planner for another CLI" "$F" "claude gemini" "$T_TMP/clibin:$T_NOCLI"
+  t_same "a planner for another CLI: council_check_planners exits" 0 "$T_RC"
+  t_err_has "a planner for another CLI" "plan-council: note: the definition of planner_gemini names none of the CLIs checked here (claude codex)"
+
+  # What counts as naming a CLI. A whole-line comment does not, nor a
+  # longer name, a variable, a model ID or a path; a planner written so
+  # names none, and is noted.
+  F=$(t_conf not-named <<'CONF'
+planner_claude() {
+  claude -p > "$1"
+}
+planner_mine() {
+  # codex and claude are both mentioned on this comment line
+  run_seat "$COUNCIL_MODEL_CLAUDE" claude-opus-5-5 planner_claude claude_alt $codex /opt/codex codex.cmd > "$1"
+}
+CONF
+)
+  t_planners "a planner that names no CLI as a word" "$F" "claude mine" "$T_TMP/clibin:$T_NOCLI"
+  t_same "a planner that names no CLI as a word: council_check_planners exits" 0 "$T_RC"
+  t_err_has "a planner that names no CLI as a word" "plan-council: note: the definition of planner_mine names none of the CLIs checked here"
+
+  # And the words that do count, read from the shipped definitions.
+  COUNCIL_CONFIG_USED=$T_SHIPPED
+  COUNCIL_PLUGIN_ROOT=$T_PLUGIN
+  for _t_fn in planner_claude planner_claude_alt planner_fable arbiter; do
+    _t_got=$(council_seat_clis "$(council_body_in_effect "$_t_fn")")
+    t_same "config/council.conf: council_seat_clis of $_t_fn" claude "$_t_got"
+  done
+  _t_got=$(council_seat_clis "$(council_body_in_effect planner_codex)")
+  t_same "config/council.conf: council_seat_clis of planner_codex" codex "$_t_got"
+
+  # The doctor runs this check with its stderr captured, and its FAIL line
+  # carries the reason instead of sending the reader to council-plan.sh.
+  PATH="$T_TMP/bin:$T_NOCLI" TMPDIR="$T_TMP/tmp" COUNCIL_CONFIG="$T_SHIPPED" COUNCIL_PLANNERS="claude codex" \
+    sh "$T_PLUGIN/scripts/council-doctor.sh" --root "$T_TMP/root" --no-model-check \
+    > "$T_TMP/doctor-nocodex.out" 2> /dev/null
+  _t_got=$(grep -c '^  FAIL  planners (claude codex): a CLI is not installed here (command -v did not find it on PATH): planner_codex drives codex\. ' "$T_TMP/doctor-nocodex.out")
+  t_same "codex missing: council-doctor.sh stdout, the FAIL line for the planners" 1 "$_t_got"
+  _t_got=$(grep -c '^  ok    planners: ' "$T_TMP/doctor-nocodex.out")
+  t_same "codex missing: council-doctor.sh stdout, an ok line for the planners" 0 "$_t_got"
+fi
 
 echo
 echo "$T_PASS passed, $T_FAIL failed"

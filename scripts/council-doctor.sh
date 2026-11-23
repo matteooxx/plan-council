@@ -135,7 +135,34 @@ else
   note "when it is connected."
   note "Run /council-setup once, or council-detect.sh to see what this machine has."
 fi
-( council_check_planners ) 2>/dev/null && ok "planners: $COUNCIL_PLANNERS" || bad "planners: run council-plan.sh to see why ($COUNCIL_PLANNERS)"
+# The planning pre-flight, in a subshell because it exits on a refusal. Its
+# stderr is kept: the reason for a refusal becomes the FAIL line, and a note
+# it prints becomes a note line. Until 2026-11-23 it was discarded, and the
+# FAIL line said only "run council-plan.sh to see why"; since the pre-flight
+# also refuses a planner whose CLI is not installed, the reason is what tells
+# that apart from a misspelt planner name. Still one ok or one FAIL line for
+# the planners, so the count of problems is what it was.
+if _cp_err=$( ( council_check_planners ) 2>&1 > /dev/null ); then
+  ok "planners: $COUNCIL_PLANNERS"
+  _cp_failed=0
+else
+  _cp_failed=1
+fi
+_cp_said=0
+# A here-document, not a pipe, so that bad counts in this shell.
+while IFS= read -r _cp_line; do
+  case "$_cp_line" in
+    "") ;;
+    "plan-council: error: "*) bad "planners ($COUNCIL_PLANNERS): ${_cp_line#plan-council: error: }"; _cp_said=1 ;;
+    "plan-council: note: "*) note "planners: ${_cp_line#plan-council: note: }" ;;
+    *) note "planners: ${_cp_line#plan-council: }" ;;
+  esac
+done <<EOF
+$_cp_err
+EOF
+if [ "$_cp_failed" -eq 1 ] && [ "$_cp_said" -eq 0 ]; then
+  bad "planners: run council-plan.sh to see why ($COUNCIL_PLANNERS)"
+fi
 type arbiter >/dev/null 2>&1 && ok "arbiter function defined" || bad "no arbiter function"
 [ -n "$COUNCIL_RISK_FLOOR" ] && ok "risk floor: $COUNCIL_RISK_FLOOR" || bad "COUNCIL_RISK_FLOOR is empty"
 ok "effort: plan $COUNCIL_PLANNER_EFFORT, attack $COUNCIL_ATTACK_EFFORT, arbitrate $COUNCIL_ARBITER_EFFORT, assign $COUNCIL_ASSIGN_EFFORT"
@@ -291,7 +318,10 @@ case "$(uname -s 2>/dev/null)" in
 esac
 
 echo "Tools"
-for tool in claude codex; do
+# _COUNCIL_KNOWN_CLIS in lib.sh: the list the planners line above checks
+# definitions against. "Configured planner" below is still read from the
+# planner's name, not its definition; the planners line reads the definition.
+for tool in $_COUNCIL_KNOWN_CLIS; do
   if grep -v '^[[:space:]]*#' "$COUNCIL_CONFIG_USED" | grep -q "$tool "; then
     used=1
   else

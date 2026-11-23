@@ -600,11 +600,122 @@ council_record_value() {
   return 0
 }
 
+# The CLIs a seat's definition is read for before anything is paid
+# (council_check_clis below), and the tools council-doctor.sh reports under
+# Tools. A list, not a claim that no other CLI is used: a planner may drive
+# any CLI (the end of the planners in config/council.conf shows how), and one
+# whose definition names none of these is noted, not refused.
+_COUNCIL_KNOWN_CLIS="claude codex"
+
+# council_body_in_effect FN -- the text of the definition of FN that runs
+# after the config in use is sourced, or nothing when that cannot be told or
+# read. It resolves the definition as council_check_deny_used does, with the
+# same two readers, council_definition_scan and council_function_body, and
+# changes neither; a body the scan saw close on another line than the reader
+# stopped at is unread here too. Call it in a command substitution: its
+# variables are not kept apart from the caller's otherwise.
+council_body_in_effect() {
+  _bie_plugin="${COUNCIL_PLUGIN_ROOT:-}/config/council.conf"
+  if [ ! -f "$_bie_plugin" ] || [ "$_bie_plugin" = "$COUNCIL_CONFIG_USED" ]; then
+    _bie_plugin=""
+  fi
+  _bie_pbody=""
+  [ -n "$_bie_plugin" ] && _bie_pbody=$(council_function_body "$1" "$_bie_plugin")
+  _bie_has=0
+  [ -n "$_bie_pbody" ] && _bie_has=1
+  _bie_scan=$(council_definition_scan "$1" "$COUNCIL_CONFIG_USED" "$_bie_has")
+  case "$_bie_scan" in
+    "def "*)
+      _bie_a=${_bie_scan#def }
+      _bie_z=${_bie_a#* }
+      _bie_a=${_bie_a%% *}
+      _bie_body=$(council_function_body "$1" "$COUNCIL_CONFIG_USED" "$_bie_a")
+      [ -n "$_bie_body" ] || return 0
+      [ "$(printf '%s\n' "$_bie_body" | wc -l | tr -d ' ')" -eq $((_bie_z - _bie_a + 1)) ] || return 0
+      printf '%s\n' "$_bie_body"
+      ;;
+    "plugin "*)
+      [ -z "$_bie_pbody" ] || printf '%s\n' "$_bie_pbody"
+      ;;
+  esac
+  return 0
+}
+
+# council_seat_clis BODY -- the CLIs of _COUNCIL_KNOWN_CLIS that BODY names,
+# one per line. A CLI is named when its name stands as a word: not part of a
+# longer name (planner_claude, claude_alt, claude-fable-5-2, codex.cmd), not
+# after a "$", "/" or "." (a variable, a path), and not on a whole-line
+# comment. It is a reading of the text, not of the command the shell runs: a
+# name inside a quoted string or a comment after code counts, and a CLI
+# reached through a helper function or by an absolute path does not.
+council_seat_clis() {
+  _csc_code=$(printf '%s\n' "$1" | sed '/^[[:space:]]*#/d')
+  for _csc_c in $_COUNCIL_KNOWN_CLIS; do
+    if printf '%s\n' "$_csc_code" | grep -Eq '(^|[^A-Za-z0-9_./$-])'"$_csc_c"'([^A-Za-z0-9_./-]|$)'; then
+      printf '%s\n' "$_csc_c"
+    fi
+  done
+  return 0
+}
+
+# council_check_clis FNS ADVICE -- stops the run, before anything is paid,
+# when a function in FNS names a known CLI (council_seat_clis) that command -v
+# does not find on the PATH the seats will run with: that seat would fail when
+# called, and the seats called before it could already have been paid for.
+# ADVICE is the caller's sentence on what to do. The CLI is read from the
+# function's body, never from its name: planner_claude_alt drives claude, and
+# there is no claude_alt to look for. A function whose body names none of the
+# known CLIs
+# is noted and not refused, since the plugin documents adding a planner for
+# another CLI; one whose definition could not be told or read is noted too,
+# and the text check (council_require_deny_used) refuses it later, still
+# before anything is paid. It sets no variable another check reads: neither
+# COUNCIL_CHECK_CLAUDE nor COUNCIL_DENY_UNCOVERED is touched, so a call
+# cannot change which seats a seat check probes.
+council_check_clis() {
+  _ccl_missing=""
+  _ccl_none=""
+  _ccl_unread=""
+  for _ccl_fn in $1; do
+    type "$_ccl_fn" >/dev/null 2>&1 || continue
+    _ccl_body=$(council_body_in_effect "$_ccl_fn")
+    if [ -z "$_ccl_body" ]; then
+      _ccl_unread="$_ccl_unread $_ccl_fn"
+      continue
+    fi
+    _ccl_clis=$(council_seat_clis "$_ccl_body")
+    if [ -z "$_ccl_clis" ]; then
+      _ccl_none="$_ccl_none $_ccl_fn"
+      continue
+    fi
+    for _ccl_c in $_ccl_clis; do
+      command -v "$_ccl_c" >/dev/null 2>&1 || _ccl_missing="$_ccl_missing $_ccl_fn drives $_ccl_c;"
+    done
+  done
+  if [ -n "$_ccl_unread" ]; then
+    council_say "note: could not tell which definition runs, or could not read it, for$_ccl_unread, so whether the CLI it drives is installed was not checked."
+  fi
+  if [ -n "$_ccl_none" ]; then
+    council_say "note: the definition of$_ccl_none names none of the CLIs checked here ($_COUNCIL_KNOWN_CLIS), so whether the CLI it drives is installed was not checked. Not checked is not the same as installed: if it is missing, the run finds out when that seat is called."
+  fi
+  if [ -n "$_ccl_missing" ]; then
+    council_die "a CLI is not installed here (command -v did not find it on PATH):${_ccl_missing%;}. Each such seat would fail when called, and seats called before it, a seat check among them, could already have been paid for. $2 Nothing has been run."
+  fi
+  return 0
+}
+
 # Fails unless every configured planner has a function, the names are plain,
-# there are no duplicates, and there are at least two.
+# there are no duplicates, there are at least two, and the CLI each one's
+# definition names is installed (council_check_clis above). Until 2026-11-23
+# it checked that the function existed and nothing else, so a planner whose
+# CLI was missing was found only when it ran: with codex a planner and not
+# installed, after the claude planner's seat check and its planning had been
+# paid for (shown with stand-ins in scripts/tests/permission-denials.sh). It
+# sets no variable the text check or the seat check reads.
 council_check_planners() {
   _n=0
   _seen=" "
+  _fns=""
   for _p in $COUNCIL_PLANNERS; do
     case "$_p" in
       *[!A-Za-z0-9_]*) council_die "planner name '$_p' may use only letters, digits and _" ;;
@@ -614,10 +725,12 @@ council_check_planners() {
     esac
     _seen="$_seen$_p "
     type "planner_$_p" >/dev/null 2>&1 || council_die "planner '$_p' has no function planner_$_p in $COUNCIL_CONFIG_USED"
+    _fns="$_fns planner_$_p"
     _n=$((_n + 1))
   done
   [ "$_n" -ge 2 ] || council_die "at least two planners are needed (COUNCIL_PLANNERS='$COUNCIL_PLANNERS')"
   [ "$_n" -le 8 ] || council_die "at most eight planners"
+  council_check_clis "$_fns" "Install it or put it on PATH, or take that planner out of COUNCIL_PLANNERS."
 }
 
 # Checks the configured functions against what every seat must carry -- the

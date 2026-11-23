@@ -4,8 +4,10 @@
 # seat write that record (council_seat_flags), the probe that calls each seat
 # (council_seat_check), the scripts that run it before their seats, the
 # refusal by council-review.sh and council-assign.sh of an arbiter the text
-# check did not judge, and the parallel runner's plumbing: prompt in, stdout
-# and stderr out to their logs.
+# check did not judge, the refusal by council-plan.sh and council-review.sh of
+# a seat whose CLI is not installed, before any call (council_check_clis), and
+# the parallel runner's plumbing: prompt in, stdout and stderr out to their
+# logs.
 #
 # Usage: sh scripts/tests/permission-denials.sh
 #        dash scripts/tests/permission-denials.sh
@@ -552,6 +554,56 @@ run_seat() {
 }
 arbiter() { run_seat "$COUNCIL_MODEL_ARBITER" "$@"; }
 CONF
+# A planner whose CLI is not installed (council_check_clis in lib.sh). The
+# PATH below leaves out every directory that holds a claude or a codex, the
+# stand-in claude's included; each row puts back what it needs. A stand-in
+# codex records that it was called, in a file of its own, and answers.
+# t_path_without NAME... -- PATH with every directory left out that holds
+# NAME or NAME.exe for one of the NAMEs.
+t_path_without() {
+  _t_out=""
+  _t_ifs=$IFS
+  IFS=:
+  set -f
+  for _t_d in $PATH; do
+    _t_keep=1
+    for _t_n in "$@"; do
+      if [ -e "$_t_d/$_t_n" ] || [ -e "$_t_d/$_t_n.exe" ]; then _t_keep=0; fi
+    done
+    [ "$_t_keep" = 0 ] || _t_out="$_t_out${_t_out:+:}$_t_d"
+  done
+  set +f
+  IFS=$_t_ifs
+  printf '%s\n' "$_t_out"
+}
+T_NOCLI=$(t_path_without claude codex)
+if PATH=$T_NOCLI command -v claude > /dev/null 2>&1 || PATH=$T_NOCLI command -v codex > /dev/null 2>&1; then
+  echo "skip  no PATH could be made here without claude and codex, so the refusal of a missing CLI was not run"
+  T_NOCLI=""
+fi
+mkdir -p "$T_TMP/codexbin"
+cat > "$T_TMP/codexbin/codex" <<STUB
+#!/bin/sh
+: > "$T_TMP/codex-called"
+STUB
+cat >> "$T_TMP/codexbin/codex" <<'STUB'
+out=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = --output-last-message ] && out=$a
+  prev=$a
+done
+cat > /dev/null
+[ -n "$out" ] || exit 2
+i=0
+while [ "$i" -lt 12 ]; do
+  echo "Plain answer line $i from the codex stand-in, long enough to be accepted."
+  i=$((i + 1))
+done > "$out"
+echo PASS >> "$out"
+STUB
+chmod +x "$T_TMP/codexbin/codex"
+
 T_SHELLS="sh"
 [ -x /usr/bin/dash ] && T_SHELLS="$T_SHELLS /usr/bin/dash"
 for T_SH in $T_SHELLS; do
@@ -738,6 +790,86 @@ for T_SH in $T_SHELLS; do
   t_has "$T_N council-assign.sh, an arbiter with no claude in its definition: the error line" "$T_TMP/assign-uj.line" "the word claude is not in its definition"
   t_lacks "$T_N council-assign.sh, an arbiter with no claude in its definition: stderr" "$T_TMP/assign-uj.err" "this run continues"
   t_lacks "$T_N council-assign.sh, an arbiter with no claude in its definition: stderr" "$T_TMP/assign-uj.err" "assigning tasks"
+
+  # A planner whose CLI is not installed is refused before the first paid
+  # call, which is the seat check's probe of each claude planner. Codex is a
+  # planner here, and the PATH holds the stand-in claude but no codex: the
+  # stand-in must record no call, and the run directory must not be made.
+  if [ -n "$T_NOCLI" ]; then
+    : > "$STUB_LOG"
+    T_RC=0
+    PATH="$T_TMP/bin:$T_NOCLI" COUNCIL_PLANNERS="claude codex" TMPDIR="$T_TMP/tmp" \
+      "$T_SH" "$T_PLUGIN/scripts/council-plan.sh" "$T_TMP/brief.md" --root "$ROOT" --out "$ROOT/.council/nocodex-$T_N" \
+      > /dev/null 2> "$T_TMP/plan-nocodex.err" || T_RC=$?
+    t_same "$T_N council-plan.sh, codex a planner and not installed: exits" 1 "$T_RC"
+    t_has "$T_N council-plan.sh, codex a planner and not installed: stderr" "$T_TMP/plan-nocodex.err" "plan-council: error: a CLI is not installed here (command -v did not find it on PATH): planner_codex drives codex."
+    t_same "$T_N council-plan.sh, codex a planner and not installed: calls the stand-in claude recorded" 0 "$(t_calls)"
+    if [ -e "$ROOT/.council/nocodex-$T_N" ]; then _t_got=present; else _t_got=absent; fi
+    t_same "$T_N council-plan.sh, codex a planner and not installed: the run directory" absent "$_t_got"
+
+    # The same with a stand-in codex on PATH: the check passes, and the seat
+    # check reaches the stand-in claude. The run's outcome is not what this
+    # row is about.
+    : > "$STUB_LOG"
+    PATH="$T_TMP/codexbin:$T_TMP/bin:$T_NOCLI" COUNCIL_PLANNERS="claude codex" TMPDIR="$T_TMP/tmp" \
+      "$T_SH" "$T_PLUGIN/scripts/council-plan.sh" "$T_TMP/brief.md" --root "$ROOT" --out "$ROOT/.council/withcodex-$T_N" \
+      > /dev/null 2> "$T_TMP/plan-withcodex.err" || :
+    t_lacks "$T_N council-plan.sh, codex a planner and a stand-in installed: stderr" "$T_TMP/plan-withcodex.err" "is not installed here"
+    if [ "$(t_calls)" -gt 0 ]; then _t_got=reached; else _t_got=not-reached; fi
+    t_same "$T_N council-plan.sh, codex a planner and a stand-in installed: the stand-in claude" reached "$_t_got"
+
+    # The review: its attacks re-run the planners council.txt records, so it
+    # checks them itself. A copy of the run reviewed above, its second
+    # planner recorded as codex. Nothing may be called or written.
+    T_CX="$ROOT/.council/codexrun-$T_N"
+    rm -rf "$T_CX"
+    mkdir -p "$T_CX"
+    for _t_f in brief.md plan-A.md plan-B.md; do cp "$RUN/$_t_f" "$T_CX/$_t_f"; done
+    grep -v '^planner\.B=' "$RUN/council.txt" | grep -v '^model\.B=' > "$T_CX/council.txt"
+    printf 'planner.B=codex\n' >> "$T_CX/council.txt"
+    cp "$T_CX/council.txt" "$T_TMP/council-cx-$T_N.txt"
+    : > "$STUB_LOG"
+    T_RC=0
+    PATH="$T_TMP/bin:$T_NOCLI" COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
+      "$T_SH" "$T_PLUGIN/scripts/council-review.sh" "$T_CX" \
+      > /dev/null 2> "$T_TMP/review-nocodex.err" || T_RC=$?
+    t_same "$T_N council-review.sh, a recorded codex planner not installed: exits" 1 "$T_RC"
+    t_has "$T_N council-review.sh, a recorded codex planner not installed: stderr" "$T_TMP/review-nocodex.err" "(command -v did not find it on PATH): planner_codex drives codex."
+    t_same "$T_N council-review.sh, a recorded codex planner not installed: calls the stand-in claude recorded" 0 "$(t_calls)"
+    _t_got=$(ls -A "$T_CX" | grep '^attack-' || true)
+    t_same "$T_N council-review.sh, a recorded codex planner not installed: attack files in the run" "" "$_t_got"
+    if cmp -s "$T_TMP/council-cx-$T_N.txt" "$T_CX/council.txt"; then _t_got=identical; else _t_got=changed; fi
+    t_same "$T_N council-review.sh, a recorded codex planner not installed: council.txt" identical "$_t_got"
+
+    # With --arbitrate-only no planner is called, so a missing codex is not
+    # refused there; this run has no attacks, which stops it instead.
+    T_RC=0
+    PATH="$T_TMP/bin:$T_NOCLI" COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
+      "$T_SH" "$T_PLUGIN/scripts/council-review.sh" "$T_CX" --arbitrate-only \
+      > /dev/null 2> "$T_TMP/review-nocodex-ao.err" || T_RC=$?
+    t_lacks "$T_N council-review.sh --arbitrate-only, a recorded codex planner not installed: stderr" "$T_TMP/review-nocodex-ao.err" "is not installed here"
+    t_has "$T_N council-review.sh --arbitrate-only, a recorded codex planner not installed: stderr" "$T_TMP/review-nocodex-ao.err" ".md is missing or empty"
+
+    # claude missing, a stand-in codex installed: the claude planner and the
+    # arbiter are named, and the codex attacker is never called. A fresh
+    # copy of the run, so that nothing an earlier row left stops it first;
+    # --no-seat-check, because the seat check would stop at the missing claude
+    # before the attacks, and without it the codex attack is what gets paid
+    # for: it runs beside the claude one, which fails.
+    T_CX2="$ROOT/.council/codexrun2-$T_N"
+    mkdir -p "$T_CX2"
+    for _t_f in brief.md plan-A.md plan-B.md; do cp "$RUN/$_t_f" "$T_CX2/$_t_f"; done
+    cp "$T_TMP/council-cx-$T_N.txt" "$T_CX2/council.txt"
+    rm -f "$T_TMP/codex-called"
+    T_RC=0
+    PATH="$T_TMP/codexbin:$T_NOCLI" COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
+      "$T_SH" "$T_PLUGIN/scripts/council-review.sh" "$T_CX2" --no-seat-check \
+      > /dev/null 2> "$T_TMP/review-noclaude.err" || T_RC=$?
+    t_same "$T_N council-review.sh, claude not installed: exits" 1 "$T_RC"
+    t_has "$T_N council-review.sh, claude not installed: stderr" "$T_TMP/review-noclaude.err" "(command -v did not find it on PATH): planner_claude drives claude; arbiter drives claude."
+    if [ -e "$T_TMP/codex-called" ]; then _t_got=called; else _t_got=not-called; fi
+    t_same "$T_N council-review.sh, claude not installed: the stand-in codex" not-called "$_t_got"
+  fi
 done
 
 echo "House rule"
