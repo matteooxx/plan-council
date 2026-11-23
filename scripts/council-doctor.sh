@@ -130,7 +130,9 @@ if [ -f "$ROOT/.claude/plan-council.conf" ] || [ -n "${COUNCIL_CONFIG:-}" ]; the
   ok "the config is one you chose"
 else
   note "this is the shipped DEFAULT, not a choice you made: it names Opus because"
-  note "that is the broadest entitlement, not because it is your best model."
+  note "that is the broadest entitlement, not because it is your best model, and"
+  note "its default planners are two Claude models: /council-setup offers Codex"
+  note "when it is connected."
   note "Run /council-setup once, or council-detect.sh to see what this machine has."
 fi
 ( council_check_planners ) 2>/dev/null && ok "planners: $COUNCIL_PLANNERS" || bad "planners: run council-plan.sh to see why ($COUNCIL_PLANNERS)"
@@ -143,8 +145,8 @@ ok "effort: plan $COUNCIL_PLANNER_EFFORT, attack $COUNCIL_ATTACK_EFFORT, arbitra
 # and the arbiter, each with the value now in effect, tagged (kept) or
 # (overridden) where the ladder did not supply it. The deal saw the planner
 # list as it stood at the line that sources the plugin's config, or "claude
-# codex" if it was empty there, the default that config fills in before it
-# deals: a COUNCIL_PLANNERS line below it can put a hand-pinned seat in play
+# claude_alt" if it was empty there, the default that config fills in before
+# it deals: a COUNCIL_PLANNERS line below it can put a hand-pinned seat in play
 # that is not listed here, or leave a listed seat out of play. With nothing
 # dealt it is the seats of planners claude and claude_alt in COUNCIL_PLANNERS
 # as it stands now, and the arbiter, read from the settings. Codex, and any

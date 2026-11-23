@@ -801,8 +801,8 @@ if command -v codex >/dev/null 2>&1; then
   esac
 else
   SUM_CODEX=absent
-  printf '  codex           not installed. Use two different Claude models instead:\n'
-  printf '                  COUNCIL_PLANNERS="claude claude_alt"\n'
+  printf '  codex           not installed. The default planners, two different Claude\n'
+  printf '                  models (COUNCIL_PLANNERS="claude claude_alt"), do not need it.\n'
 fi
 
 echo "Agents with a pinned model (the assignment roster)"

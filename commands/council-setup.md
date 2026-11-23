@@ -108,6 +108,12 @@ terms, including anything that failed.
   whether it holds: neither that it does nor that it does not. It is not a
   pass, and must not be reported as one.
 - If `CODEX=no` or `absent`, the second planner must be another Claude model.
+  Say: "Both planners will be Claude models, which is the shipped default.
+  Every seat then carries the same seat flags and deny rule, and is probed
+  before each phase unless --no-seat-check is given. What this lacks is a
+  rival from another vendor: two models from one vendor can share a blind
+  spot, and nothing in the plugin measures how often. Installing the Codex
+  CLI, logging in and running /council-setup again offers one."
 
 ## 4. Which models
 
@@ -122,6 +128,10 @@ token. These are prices, not a measurement of which model plans or judges
 better, and nothing in the plugin has measured that. If the user is on a
 subscription rather than API billing, say these figures are the scale, not a
 bill.
+
+**If `CODEX=yes`, open with this:** "The shipped default seats two Claude
+models; Codex is seated only by your answer here, and with it the rival is
+another vendor's model."
 
 **If `CODEX=yes`, say this before Codex is offered as a planner, on either
 path below:** a Codex seat is not held to what a Claude seat is held to.
