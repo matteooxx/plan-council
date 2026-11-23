@@ -90,6 +90,26 @@ for L in $LETTERS; do
 done
 [ "$COUNT" -ge 2 ] || council_die "need at least two plans, found $COUNT"
 
+# The CLI each seat of this review drives must be installed (council_check_clis
+# in lib.sh), checked here, before anything is paid or written. The attacks
+# re-run the planners council.txt records, and council_check_planners, which
+# council-plan.sh runs, is not called here. Without this, a recorded codex
+# planner whose CLI is missing was found only when it attacked, after the
+# attack phase's seat check and the claude attack had been paid for; and a
+# missing claude, under --no-seat-check, only after the codex attack had been
+# paid for (both shown with stand-ins in scripts/tests/permission-denials.sh).
+# Under --arbitrate-only no planner is called, so only the arbiter is checked.
+# The check sets neither list a seat check reads (COUNCIL_CHECK_CLAUDE,
+# COUNCIL_DENY_UNCOVERED), and it sits above both windows the comment on
+# council_check_deny_used above forbids.
+CLI_FNS=""
+if [ "$ARBITRATE_ONLY" -eq 0 ]; then
+  for L in $LETTERS; do
+    CLI_FNS="$CLI_FNS planner_$(council_manifest_get "$MANIFEST" "planner\\.$L")"
+  done
+fi
+council_check_clis "$CLI_FNS arbiter" "A review calls the planners council.txt records and the arbiter: install the CLI or put it on PATH, and run the review again. Nothing in $RUN has been changed."
+
 # --- Each planner attacks with its own model ----------------------------------
 # The config is reloaded here and planner_<name> is called with whatever is in
 # effect now, while this script promises that each planner attacks with the
