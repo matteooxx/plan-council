@@ -397,25 +397,50 @@ so something else did. With a run directory outside the root, as `--out` can
 place it, `--restricted` alone refuses the read with no deny rule at all, and
 the record says that it does not show a deny rule did it. It shows that one
 read, in a separate process, just before the phase, was refused; it is no
-record of the calls that follow. Nor does it check that `Bash` is denied.
+record of the calls that follow.
 A planner whose function does not run `claude` itself is not probed, and the
 record lists it; an `arbiter` like that does not get this far. `--no-seat-check`
 skips the check, and `council.txt` then records `skipped`. `council-assign.sh`
 does not run it.
 
-The tests of both checks ship with the plugin, so you can run them on your
-own shell:
+Nor can the check tell whether `Bash` is denied, and that is not an omission
+to close by reading the CLI's record. Measured 2026-11-23, three calls with
+`--output-format json`: with the shipped seat flags, and again with no
+`--tools` and `Bash` denied by name, the seat had no `Bash`, answered
+`NO SHELL TOOL`, and `permission_denials` was empty; the control, with no
+`--tools` and `Bash` allowed, ran the command from the same prompt and
+printed its output. A tool denied by name is absent from the session, not
+refused on use, so no refusal happens and the CLI has nothing to
+record. A path rule on `Read` is the opposite: the tool stays present, and
+the CLI records the refusal when a read hits the rule. That is why the deny
+rule can be checked per run and `Bash` cannot. The check does not verify
+that `Bash` is absent, and its absence cannot be read from that record.
+
+Four test files ship with the plugin: `definitions.sh` tests the text check,
+`permission-denials.sh` the per-run seat check, `repository-block.sh` what
+the runner tells the seats about the repository, and `canary.sh` the deny
+canary in `council-detect.sh`. You can run them on your own shell:
 
 ```sh
 sh <plugin>/scripts/tests/definitions.sh
 dash <plugin>/scripts/tests/definitions.sh
 sh <plugin>/scripts/tests/permission-denials.sh
 dash <plugin>/scripts/tests/permission-denials.sh
+sh <plugin>/scripts/tests/repository-block.sh
+dash <plugin>/scripts/tests/repository-block.sh
 sh <plugin>/scripts/tests/canary.sh
 dash <plugin>/scripts/tests/canary.sh
 ```
 
 with `<plugin>` the plugin's directory.
+
+`canary.sh` already runs `council-detect.sh` under both shells, `sh` and
+`/usr/bin/dash` where it exists, whichever shell runs the file. So
+`dash canary.sh` after `sh canary.sh` runs that whole matrix a second time,
+and what it adds is the test file itself running under dash, nothing else.
+If you run one, run `sh <plugin>/scripts/tests/canary.sh`: it needs no dash
+to start, and it still runs the dash half of the matrix wherever
+`/usr/bin/dash` exists.
 
 **They take a while, and `canary.sh` takes the longest.** Measured on Git
 Bash on Windows, 2026-11-20: `canary.sh` ran its 504 assertions in 1368
@@ -428,7 +453,9 @@ They write only to a temporary
 directory, which they remove, and they run `council-assign.sh` and
 `council-doctor.sh` with a stand-in `claude` first on `PATH`, so no model is
 called; `permission-denials.sh` runs `council-plan.sh`,
-`council-review.sh` and `council-assign.sh` the same way, and `canary.sh` runs `council-detect.sh`
+`council-review.sh` and `council-assign.sh` the same way, `repository-block.sh`
+runs `council-plan.sh` and `council-review.sh` the same way, with
+`--no-seat-check`, and `canary.sh` runs `council-detect.sh`
 with a stand-in `claude` that carries out the canary's probes itself and a
 stand-in `codex` that is not logged in. When `bash` is installed, one section of
 `definitions.sh` sources every test config in
@@ -499,6 +526,11 @@ longer refuses a run directory git can see (see
 [Limitations](#limitations)). Committed between the two HEADs, its files are
 named one by one in `git diff --stat`. Names only: a prompt can say
 `?? runs/` or name `council.txt`, never what `council.txt` maps.
+What a seat can read is another matter: with `--out` outside
+`<root>/.council` and inside the context root, no deny rule covers the
+earlier runs placed there, so a Claude seat can read their `council.txt`,
+and the attribution of those runs is not protected (see
+[Limitations](#limitations)).
 
 Not a git work tree, no commits yet, a detached HEAD and `git` missing from
 `PATH` are all said in the block, in words; none of them stops a run.
