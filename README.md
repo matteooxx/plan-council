@@ -3,8 +3,9 @@
 A Claude Code plugin that plans a change with a **council of rival models**
 and then runs the plan under strict execution discipline:
 
-1. Two or more planners (Claude and Codex by default) get **the same brief at
-   the same time** and each writes its own plan **without seeing the other's**.
+1. Two or more planners (two different Claude models by default; Codex when
+   you seat it) get **the same brief at the same time** and each writes its
+   own plan **without seeing the other's**.
 2. Each planner then **attacks the other's plan**, all at once, so no
    critic inherits another critic's targets.
 3. A **read-only arbiter** decides, checking the cited code itself instead
@@ -119,8 +120,10 @@ version rule cannot resolve on its own.
 - Claude Code (verified against 2.1.325).
 - A POSIX shell with `awk`, `sed`, `cmp`, `mktemp`, `cut`, `tr` and `git`. No
   Python, Node or `jq` is needed.
-- Optional: the [Codex CLI](https://github.com/openai/codex), logged in. Without it, see
-  [Two Claude models instead of Codex](#two-claude-models-instead-of-codex).
+- Optional: the [Codex CLI](https://github.com/openai/codex), logged in, only
+  if you seat it as a planner. The default planners are two Claude models and
+  do not need it; see
+  [The default planners, and seating Codex](#the-default-planners-and-seating-codex).
 
 **Any OS, but not any shell.** The scripts are POSIX `sh` and run on Linux,
 macOS and Windows. What differs is how you invoke them, so nothing here
@@ -229,7 +232,7 @@ published only when both have finished:
   brief.md      copy of the brief
   prompt.md     the one prompt every planner received
   plan-A.md     claude's plan
-  plan-B.md     codex's plan
+  plan-B.md     claude_alt's plan
   council.txt   root, brief, config, which planner is which letter, and the
                 model each was run on as far as the plugin can know it
   logs/
@@ -585,7 +588,7 @@ pin `COUNCIL_MODEL_CODEX` if you want it fixed.
 
 
 ```sh
-COUNCIL_PLANNERS="claude codex"
+COUNCIL_PLANNERS="claude claude_alt"
 
 planner_claude() {
   claude -p --model "$COUNCIL_MODEL_CLAUDE" \
@@ -615,9 +618,9 @@ that drives another CLI is refused by `council-review.sh` and
 `council-assign.sh`, with no option to skip: unlike a planner, the arbiter
 cannot be Codex or a tool of your own.
 
-### Two Claude models instead of Codex
+### The default planners, and seating Codex
 
-If Codex is not installed, set:
+The shipped default is two different Claude models:
 
 ```sh
 COUNCIL_PLANNERS="claude claude_alt"
@@ -628,6 +631,67 @@ Claude model than `planner_claude`. Keep them different: disagreement is the
 product, and the same model twice gives you mostly the same plan twice.
 Everything else (blind planning, parallel attacks, arbitration) works
 unchanged.
+
+`planner_codex` ships too, unchanged. `/council-setup` offers it whenever
+Codex is connected, ahead of a second Claude model, and says what a Codex
+seat is not held to before it asks (see [Limitations](#limitations)).
+To seat it by hand:
+
+```sh
+COUNCIL_PLANNERS="claude codex"
+```
+
+**Why Codex is not the default.** A council decided this on 2026-11-23.
+Declaring a gap corrects what the plugin *says*; a default is what it
+*does*. On a seat you chose, the gap is stated where you choose it:
+`/council-setup` states it before it asks. On a default seat it sat in
+documents the default exists to let you skip: the sentence at the top of this
+README that named the default carried no part of it. The code already
+refuses to plan or review with a Claude seat that lacks the deny rule, and
+offers no way to skip that; Codex cannot carry that rule, so it is a seat you
+opt into rather than one nobody asked for.
+
+There is a plainer reason too. Codex is optional, and nothing checks for its
+binary before a run: the pre-flight asks only whether each planner's function
+exists. Read in the code and not run: on a machine without Codex, the old
+default paid for the Claude planner's seat check, then waited for every
+planner, the Claude one included, and exited 1. **With two Claude planners, a
+user without Codex gets a default run that can finish.** The change adds no
+binary check, so a Codex seat you choose without installing Codex still fails
+that way.
+
+**What it costs**, as a fresh install would notice it:
+
+- **Plan B comes from a second Claude model.** By default that is Opus 5.5
+  and Sonnet 5.5 as planners and Opus 5.5 as the arbiter, so all three seats
+  are from one vendor, and the arbiter shares a model with planner A. That is
+  what the cross-attack loses: two models from one vendor can share a blind
+  spot, and nothing in the plugin measures how often.
+- **Both planners bill to the Claude account.**
+- **The seat check makes two calls per planner phase where it made one**: it
+  probes every Claude seat, and it does not call a Codex seat.
+- **A mode config written by hand with no planner line now has three Claude
+  seats**, and a ladder with two rungs then stops the load (see
+  [Limitations](#limitations)).
+- **A hand-written project config with no planner line changes its rival on
+  upgrade**, from Codex to a second Claude model. A config written by
+  `/council-setup` always holds a planner line and does not change.
+- **A second model your account cannot run is caught by `/council-doctor`
+  only if you run it.** A planning run checks models only under a mode.
+
+**What would show this decision was wrong:**
+
+- **A paired rerun.** Rerun several of this project's own past briefs under
+  both planner sets, `claude claude_alt` and `claude codex`, with the same
+  arbiter. Count the arbitration decisions that rested on a fault only the
+  cross-vendor attack raised and that the arbiter confirmed in the code. If
+  that happens on more than an isolated brief, the cost above is real and the
+  default goes back to the owner. Nothing schedules it: it runs when the
+  owner chooses.
+- **The gap closes.** A codex-cli release whose `codex exec --help` restricts
+  reads, or a measurement in which a Codex seat is refused both the run
+  directory and a path outside the root. Check at each codex-cli upgrade,
+  when the config already says to run `/council-doctor` again.
 
 ### Adding a third planner
 
@@ -1153,9 +1217,10 @@ so its costs are counted calls, not bills:
 - **Under `standard`, the first model on your ladder also drafts the
   assignment table**, because the arbiter's model is the one
   `/council-assign` runs. The mode's assignment effort is the only lever on it.
-- **A two-model account without Codex needs one hand pin to use a mode at
-  all.** Two Claude planners and the arbiter are three seats, and a two-rung
-  ladder runs out: the load stops. Pinning the arbiter to one of the two models
+- **A two-model account needs one hand pin to use a mode with two Claude
+  planners**, which is the default planner set, so a mode config with no
+  planner line is one. Two Claude planners and the arbiter are three seats,
+  and a two-rung ladder runs out: the load stops. Pinning the arbiter to one of the two models
   lets it load; the plugin allows an arbiter that shares a planner's model and
   only discourages it.
 - **The situation question comes after the paid probe.** `/council-setup` asks

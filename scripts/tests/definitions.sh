@@ -1889,6 +1889,22 @@ t_same "the shipped config with codex as a planner: council-doctor.sh stdout, a 
 _t_got=$(grep '^  note  the text check found no claude in the definition of:' "$T_TMP/doctor-shipped.out")
 t_same "the shipped config with codex as a planner: council-doctor.sh stdout, the note" "  note  the text check found no claude in the definition of: planner_codex" "$_t_got"
 
+# The shipped default planner set, as a run with no project config and no
+# COUNCIL_CONFIG gets it: two Claude models, so no planner is left uncovered.
+# Decided by a council on 2026-11-23. The root holds no .claude directory, and
+# both variables are unset in the subshell, so the plugin's own config is the
+# one loaded.
+(
+  unset COUNCIL_CONFIG COUNCIL_PLANNERS
+  PATH="$T_TMP/bin:$PATH" TMPDIR="$T_TMP/tmp" \
+    sh "$T_PLUGIN/scripts/council-doctor.sh" --root "$T_TMP/root" --no-model-check \
+    > "$T_TMP/doctor-default.out" 2> /dev/null
+)
+_t_got=$(grep '^  ok    planners: ' "$T_TMP/doctor-default.out")
+t_same "no project config: council-doctor.sh stdout, the planners line" "  ok    planners: claude claude_alt" "$_t_got"
+_t_got=$(grep -c '^  note  the text check found no claude in the definition of:' "$T_TMP/doctor-default.out")
+t_same "no project config: council-doctor.sh stdout, notes on an uncovered planner" 0 "$_t_got"
+
 echo
 echo "$T_PASS passed, $T_FAIL failed"
 [ "$T_FAIL" -eq 0 ]

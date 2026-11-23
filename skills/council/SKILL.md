@@ -118,4 +118,4 @@ The floor is `COUNCIL_RISK_FLOOR` in the config.
 
 ## Adding or swapping planners
 
-Planners are shell functions in the config (`config/council.conf`, overridable per project at `<root>/.claude/plan-council.conf`). Claude and Codex work out of the box. Without Codex, set `COUNCIL_PLANNERS="claude claude_alt"`: two **different** Claude models. Any other CLI agent is one function that reads the prompt on stdin and makes its answer land in the file named by `$1`. See the README.
+Planners are shell functions in the config (`config/council.conf`, overridable per project at `<root>/.claude/plan-council.conf`). The default is two **different** Claude models, `COUNCIL_PLANNERS="claude claude_alt"`, which need nothing but Claude Code. Codex is seated only when chosen, as `COUNCIL_PLANNERS="claude codex"`; `/council-setup` offers it when Codex is connected and first says what a Codex seat is not held to. Any other CLI agent is one function that reads the prompt on stdin and makes its answer land in the file named by `$1`. See the README.

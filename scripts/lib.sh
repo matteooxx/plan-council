@@ -1376,7 +1376,7 @@ council_shadowed_message() {
 # It reads COUNCIL_DENY_UNCOVERED and calls nothing. It tests the one word
 # arbiter, not whether that list is empty: council-doctor.sh calls the check
 # once with the arbiter and every planner, and planner_codex, which holds no
-# "claude", is in the list on the default planner set.
+# "claude", is in the list whenever codex is seated.
 #
 # Every call of council_check_deny_used resets COUNCIL_DENY_UNCOVERED and
 # COUNCIL_CHECK_CLAUDE, and council_seat_check and council_seat_skip read
