@@ -22,6 +22,9 @@
 # Read(DIR/**) argument covers the file, or when --restricted is given and the
 # file lies outside its working directory; otherwise it reads the file and
 # puts its first line in the result. STUB_MODE makes it misbehave on purpose.
+# When STUB_RULES names a file, it also writes there one line per Read(...)
+# argument, prefixed by the COUNCIL_PHASE the runner exported, so that what a
+# script computes for its deny rules can be read phase by phase.
 # Everything is written to that temporary directory, which is removed on exit.
 set -u
 
@@ -146,6 +149,13 @@ cat > "$T_TMP/bin/claude" <<'STUB'
   echo "--- call"
   for a in "$@"; do printf 'arg:%s\n' "$a"; done
 } >> "$STUB_LOG"
+# One line per rule, phase first: a whole line per write, so seats running in
+# parallel cannot mix one call's rules with another's phase.
+if [ -n "${STUB_RULES:-}" ]; then
+  for a in "$@"; do
+    case "$a" in 'Read('*) printf '%s %s\n' "${COUNCIL_PHASE:-none}" "$a" >> "$STUB_RULES" ;; esac
+  done
+fi
 prompt=$(cat)
 json=0
 restricted=0
@@ -223,8 +233,20 @@ STUB
 chmod +x "$T_TMP/bin/claude"
 PATH="$T_TMP/bin:$PATH"
 STUB_LOG="$T_TMP/stub.log"
+STUB_RULES="$T_TMP/stub-rules.log"
 STUB_MODE=""
-export PATH STUB_LOG STUB_MODE
+export PATH STUB_LOG STUB_RULES STUB_MODE
+
+# t_rule_count PHASE RULE -- how many Read(...) arguments the stand-in
+# received in PHASE that equal RULE, read from STUB_RULES.
+t_rule_count() {
+  if [ -f "$STUB_RULES" ]; then grep -c -x -F -e "$1 $2" "$STUB_RULES" || true; else echo 0; fi
+}
+
+# t_rule_lines -- how many Read(...) arguments the stand-in received at all.
+t_rule_lines() {
+  if [ -f "$STUB_RULES" ]; then wc -l < "$STUB_RULES" | tr -d ' '; else echo 0; fi
+}
 
 # t_calls -- the number of calls the stand-in has recorded.
 t_calls() {
@@ -536,6 +558,7 @@ for T_SH in $T_SHELLS; do
   T_N=${T_SH##*/}
   # A plan, with two claude planners, run directory inside the root.
   : > "$STUB_LOG"
+  : > "$STUB_RULES"
   T_RC=0
   COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
     "$T_SH" "$T_PLUGIN/scripts/council-plan.sh" "$T_TMP/brief.md" --root "$ROOT" \
@@ -547,6 +570,14 @@ for T_SH in $T_SHELLS; do
   t_has "$T_N council-plan.sh: council.txt" "$RUN/council.txt" "seatcheck.plan.target=inside"
   t_same "$T_N council-plan.sh: calls the stand-in recorded (two probes, two planners)" 4 "$(t_calls)"
   t_same "$T_N council-plan.sh: calls carrying --output-format json (the probes only)" 2 "$(t_json_calls)"
+  # Planning deliberately leaves earlier runs readable: COUNCIL_DENY2 is this
+  # run's rule, so the rule on the whole council tree must not arrive here.
+  # Compared with council_deny_rule, which builds the CLI's path form.
+  T_ALLRUNS=$(council_deny_rule "$ROOT/.council")
+  T_THISRUN=$(council_deny_rule "$RUN")
+  t_same "$T_N council-plan.sh: rules naming all of ROOT/.council (planning leaves earlier runs readable)" 0 "$(t_rule_count plan "$T_ALLRUNS")"
+  t_same "$T_N council-plan.sh: rules naming this run (COUNCIL_DENY and COUNCIL_DENY2, four calls)" 8 "$(t_rule_count plan "$T_THISRUN")"
+  t_same "$T_N council-plan.sh: Read rules received in all" 8 "$(t_rule_lines)"
   for L in A B; do
     _t_got=$(head -c 1 "$RUN/plan-$L.md")
     t_same "$T_N council-plan.sh: plan-$L.md, first character" "P" "$_t_got"
@@ -559,6 +590,7 @@ for T_SH in $T_SHELLS; do
 
   # The review of that run: an attack phase and an arbitration.
   : > "$STUB_LOG"
+  : > "$STUB_RULES"
   T_RC=0
   COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
     "$T_SH" "$T_PLUGIN/scripts/council-review.sh" "$RUN" \
@@ -569,6 +601,17 @@ for T_SH in $T_SHELLS; do
   t_has "$T_N council-review.sh: council.txt" "$RUN/council.txt" "seatcheck.arbitrate.seats=arbiter"
   t_same "$T_N council-review.sh: calls carrying --output-format json (three probes)" 3 "$(t_json_calls)"
   t_same "$T_N council-review.sh: calls the stand-in recorded (three probes, two attacks, one arbiter)" 6 "$(t_calls)"
+  # COUNCIL_DENY2 at review names all of ROOT/.council, so that an earlier
+  # run's council.txt, whose letter-to-planner mapping a project running the
+  # same planners in the same order shares, stays out of reach. Read from the
+  # arguments the runner passed, not from a seat's attempt to read: a seat
+  # with --restricted is refused a run directory outside the root whatever
+  # the rule says, and such a test would pass for the wrong reason.
+  t_same "$T_N council-review.sh: attack phase, rules naming all of ROOT/.council (two probes, two attacks)" 4 "$(t_rule_count attack "$T_ALLRUNS")"
+  t_same "$T_N council-review.sh: arbitrate phase, rules naming all of ROOT/.council (one probe, one arbiter)" 2 "$(t_rule_count arbitrate "$T_ALLRUNS")"
+  t_same "$T_N council-review.sh: attack phase, rules naming this run" 4 "$(t_rule_count attack "$T_THISRUN")"
+  t_same "$T_N council-review.sh: arbitrate phase, rules naming this run" 2 "$(t_rule_count arbitrate "$T_THISRUN")"
+  t_same "$T_N council-review.sh: Read rules received in all" 12 "$(t_rule_lines)"
   for F in attack-A.md attack-B.md arbitration.md; do
     _t_got=$(head -c 1 "$RUN/$F")
     t_same "$T_N council-review.sh: $F, first character" "P" "$_t_got"
@@ -577,6 +620,7 @@ for T_SH in $T_SHELLS; do
   t_same "$T_N council-review.sh: planted file left in the run directory" "" "$_t_got"
   # A rerun of the arbitration replaces its seat-check lines.
   : > "$STUB_LOG"
+  : > "$STUB_RULES"
   COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
     "$T_SH" "$T_PLUGIN/scripts/council-review.sh" "$RUN" --arbitrate-only --no-seat-check \
     > /dev/null 2>&1
@@ -585,6 +629,8 @@ for T_SH in $T_SHELLS; do
   t_has "$T_N council-review.sh --arbitrate-only --no-seat-check: council.txt" "$RUN/council.txt" "seatcheck.arbitrate=skipped"
   t_has "$T_N council-review.sh --arbitrate-only: the attack record is kept" "$RUN/council.txt" "seatcheck.attack=passed"
   t_same "$T_N council-review.sh --no-seat-check: calls carrying --output-format json" 0 "$(t_json_calls)"
+  t_same "$T_N council-review.sh --arbitrate-only: rules naming all of ROOT/.council (the arbiter alone)" 1 "$(t_rule_count arbitrate "$T_ALLRUNS")"
+  t_same "$T_N council-review.sh --arbitrate-only: Read rules received in all" 2 "$(t_rule_lines)"
 
   # A run directory outside the root.
   : > "$STUB_LOG"
@@ -618,6 +664,20 @@ for T_SH in $T_SHELLS; do
   t_same "$T_N council-plan.sh --no-seat-check: exits" 0 "$T_RC"
   t_has "$T_N council-plan.sh --no-seat-check: council.txt" "$(tail -n 1 "$T_TMP/plan-skip.out")/council.txt" "seatcheck.plan=skipped"
   t_same "$T_N council-plan.sh --no-seat-check: calls carrying --output-format json" 0 "$(t_json_calls)"
+
+  # An assignment that reaches its seat, with the shipped config. It sets
+  # COUNCIL_DENY2 to the rule on all of ROOT/.council, as review does.
+  mkdir -p "$T_TMP/assign-ok-$T_N"
+  : > "$STUB_LOG"
+  : > "$STUB_RULES"
+  T_RC=0
+  TMPDIR="$T_TMP/tmp" \
+    "$T_SH" "$T_PLUGIN/scripts/council-assign.sh" "$T_TMP/final-plan.md" --root "$ROOT" \
+    --out "$T_TMP/assign-ok-$T_N/assignment.md" > /dev/null 2> "$T_TMP/assign-ok.err" || T_RC=$?
+  t_same "$T_N council-assign.sh: exits" 0 "$T_RC"
+  t_same "$T_N council-assign.sh: calls the stand-in recorded (the arbiter alone)" 1 "$(t_calls)"
+  t_same "$T_N council-assign.sh: rules naming all of ROOT/.council" 1 "$(t_rule_count assign "$T_ALLRUNS")"
+  t_same "$T_N council-assign.sh: rules naming the output directory" 1 "$(t_rule_count assign "$(council_deny_rule "$T_TMP/assign-ok-$T_N")")"
 
   # An arbiter the text check did not judge is refused before anything runs.
   # Its own run, which nothing else reviews: a review that had written
