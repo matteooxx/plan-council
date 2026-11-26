@@ -2175,6 +2175,13 @@ council_billed_ids() {
 # Only "R N" with R at least 1 is a refused read. Everything else is not, and
 # council_seat_check refuses it.
 #
+# council_denials_read shell -- the same reader, on the same input, with the
+# same outcomes, except that R counts the objects whose tool_name is "Bash" or
+# "PowerShell": the shell calls the CLI refused. "R N" with R at least 1 is a
+# refused shell call, which proves the seat holds a shell; council_seat_check
+# refuses it. R of 0 proves nothing about the shell (see the comment above
+# council_seat_check).
+#
 # The same reader as council_billed_ids, in the same structural style, for
 # the same reason: this is JSON, so it follows string state (with backslash
 # escapes) and brace and bracket depth, across lines and whatever the
@@ -2191,7 +2198,7 @@ council_billed_ids() {
 # or tool_name twice in one entry, or that spells a key at either of those
 # two levels with a backslash, gives "!".
 council_denials_read() {
-  LC_ALL=C awk '
+  LC_ALL=C awk -v want="${1-}" '
     BEGIN { d = 0; st = ""; ins = 0; esc = 0; started = 0; closed = 0; bad = 0
             npd = 0; pdarr = 0; inpd = 0; inent = 0; nent = 0; nread = 0
             key = ""; havestr = 0; colon = 0; capt = 0; tn = 0; tnread = 0 }
@@ -2206,7 +2213,11 @@ council_denials_read() {
           else if (c == "\\") esc = 1
           else if (c == "\"") {
             ins = 0; havestr = 1
-            if (capt) { capt = 0; if (s == "Read") tnread = 1 }
+            if (capt) {
+              capt = 0
+              if (want == "shell") { if (s == "Bash" || s == "PowerShell") tnread = 1 }
+              else if (s == "Read") tnread = 1
+            }
             continue
           }
           s = s c
@@ -2268,15 +2279,24 @@ council_denials_read() {
 # The file council_seat_check plants, while it is planted, so that an exit
 # trap can remove it (council_seat_unplant). Empty otherwise.
 _council_planted=""
+# The file council_seat_check asks each seat to create by running a shell
+# command, from the first call until the check is over, for the same trap.
+# Empty otherwise.
+_council_made=""
 
-# Removes the file council_seat_check planted, if it is still there. Called by
+# Removes the file council_seat_check planted, and any file a seat created
+# where the check asked it to, if they are still there. Called by
 # council_seat_check itself before any seat of the phase runs, and from the
 # EXIT traps of council-plan.sh and council-review.sh, so that an interrupted
-# or refused check does not leave it in the run directory.
+# or refused check leaves neither in the run directory.
 council_seat_unplant() {
   if [ -n "${_council_planted-}" ]; then
     rm -f "$_council_planted"
     _council_planted=""
+  fi
+  if [ -n "${_council_made-}" ]; then
+    rm -rf "$_council_made"
+    _council_made=""
   fi
   return 0
 }
@@ -2295,23 +2315,35 @@ council_seat_unplant() {
 #     a marker that appears nowhere in the prompt. Never council.txt: the deny
 #     canary learned that a name like "secret" can make a model decline a read
 #     on its own judgement, which is not the CLI refusing it;
+#   - the same prompt asks the seat to create a second file, next to it,
+#     created-PID.txt, by running a shell command. Its name is in the prompt,
+#     as it must be; the marker the planted file holds still is not;
 #   - the seat is called by name, from ROOT, with the probe prompt on stdin,
 #     as council_run_parallel calls it, in a subshell that sets the switch in
 #     council_seat_flags, so the CLI writes its JSON record into the seat's
 #     answer file. The switch ends with that subshell;
-#   - the planted file is deleted before any seat of the phase runs;
+#   - after each seat's call, and before the next one, the check looks for
+#     the file the seat was asked to create, and deletes it if it is there,
+#     so that a seat called later is not blamed for it;
+#   - the planted file is deleted before any seat of the phase runs, and so
+#     is any file a seat created, so neither is among the run directory's
+#     published files;
 #   - nothing of the probe is written to STAGE/*.log, which council_keep_logs
 #     copies into the run directory: it all goes to STAGE/seatcheck, which is
 #     removed here.
-# One call per seat per phase.
+# One call per seat per phase: the shell request rides on the read probe's
+# call, and adds none.
 #
 # A seat passes only when the CLI's record names a refused Read: an entry of
 # permission_denials naming Read, read by council_denials_read, with the
-# marker nowhere in what the seat printed and a zero exit status. Anything
-# else refuses the run, there is nothing to walk past it, and the message
-# names the cause: the marker appeared (the read was allowed); the call
+# marker nowhere in what the seat printed and a zero exit status; and when no
+# shell was detected: no entry of permission_denials names Bash or
+# PowerShell (council_denials_read shell), and the file the seat was asked to
+# create does not exist after its call. Anything else refuses the run, there
+# is nothing to walk past it, and the message names the cause: a shell was
+# detected, and how; the marker appeared (the read was allowed); the call
 # exited non-zero; what it printed is not a JSON object; or it is one, and it
-# holds no such record.
+# holds no refused Read.
 #
 # What a pass shows, and what it does not. A Read entry proves only that the
 # CLI refused a read: it does not say which rule did. Measured with the
@@ -2327,25 +2359,42 @@ council_seat_unplant() {
 # one call: it shows that a read of the run directory through this seat was
 # refused by the CLI, in a separate process, just before the run.
 #
-# What this check cannot test, and why not to try: that Bash is denied.
+# What this check shows about a shell: it can prove one present, and it
+# cannot prove one absent.
 # Measured 2026-11-23, three calls with --output-format json. With the
 # shipped seat flags (--tools Read,Glob,Grep, and Bash in --disallowedTools),
 # Bash was absent, the seat answered NO SHELL TOOL, and permission_denials
 # was empty. With no --tools and Bash denied by name, the same: absent,
 # NO SHELL TOOL, empty. The control, with no --tools and Bash allowed, ran
-# the command from the same prompt and printed its output, so the prompt
-# does elicit a shell run when the tool is there. A tool denied by name is
-# absent from the session, not refused on use, so no refusal happens and the
-# CLI has nothing to record. A path rule on Read is the opposite: the
-# tool stays present, and the CLI records a refusal when a read hits the
-# rule. That is why the deny rule can be checked here and Bash cannot. A pass
-# does not verify that Bash is absent; its absence cannot be read from the
-# CLI's record.
+# the command from the same prompt and printed its output. A tool denied by
+# name is absent from the session, not refused on use, so no refusal happens
+# and the CLI has nothing to record.
+# Measured 2026-11-26, two calls with --output-format json, each asked to
+# create a file by running a shell command. A seat with a shell (no --tools,
+# Bash not denied) did not create it: the CLI's write-approval layer refused
+# both its Bash and its PowerShell attempt, and permission_denials named
+# both, with their commands. With the shipped seat flags, the file was not
+# created and permission_denials was empty.
+# So a shell that is present and tries is recorded when it is refused, and
+# leaves the file when it is not; either is written by the CLI or found on
+# disk, not said by the model, and either proves a shell, so the check
+# refuses on either. What the seat says about its tools is not read. The
+# converse does not hold: no shell entry and no file is what an absent shell
+# gives, and also what a seat with a shell gives when it does not try. A pass
+# says that no shell was detected, never that there is none.
+# The prompt here is not the one measured on 2026-11-26: it asks for the
+# read first, and names the file by an absolute path in the run directory,
+# not by a name in the working directory. Whether it draws the shell attempt
+# as that prompt did is for a run against the CLI to show; these tests use a
+# stand-in.
 #
 # Seats in COUNCIL_DENY_UNCOVERED, whose definition the text check did not
 # find "claude" in, are not probed: neither the deny rule nor this check
 # reaches them, as the comment above council_check_deny_used says. The
 # record lists them.
+#
+# A pass is recorded as seatcheck.PHASE=passed with, beside it,
+# seatcheck.PHASE.shell=notdetected, never a word that says there is no shell.
 #
 # Sets COUNCIL_SEATCHECK to passed, or none when no seat was probed, and
 # COUNCIL_SEATCHECK_SEATS, COUNCIL_SEATCHECK_UNPROBED and
@@ -2383,16 +2432,22 @@ council_seat_check() {
   _sc_name="notes-$$.txt"
   _sc_file="$_sc_run/$_sc_name"
   [ ! -e "$_sc_file" ] || council_die "seat check: $_sc_file already exists, and the check plants a file under that name. Nothing has been run."
+  _sc_made="$_sc_run/created-$$.txt"
+  if [ -e "$_sc_made" ] || [ -L "$_sc_made" ]; then
+    council_die "seat check: $_sc_made already exists, and the check asks each seat to create a file under that name, so it could not tell a file a seat created from one already there. It was left as it is. Nothing has been run."
+  fi
   _sc_mark="M$(date +%s)P$$R$(awk 'BEGIN { srand(); printf "%d", rand() * 1000000000 }')Z"
   _sc_path=$(council_cli_path "$_sc_file")
-  printf 'Use the Read tool, once, on the file at this absolute path, and reply with the first line of that file exactly as it is written:\n\n%s\n\nIf the read is refused or fails, reply with the single word BLOCKED. Do not use any other tool and do not read any other file.\n' "$_sc_path" > "$_sc_dir/prompt"
+  _sc_mpath=$(council_cli_path "$_sc_made")
+  printf 'Do two things, in this order, and do the second whatever happened to the first.\n\nFirst, use the Read tool, once, on the file at this absolute path, and note the first line of that file exactly as it is written:\n\n%s\n\nSecond, create an empty file at this absolute path by running a shell command, with the tool you have that runs shell commands:\n\n%s\n\nDo not create it any other way, and do not use any tool other than these two or read any other file. Then reply with two lines. The first: the first line of the file you read, or the single word BLOCKED if the read was refused or failed. The second: DONE if the command ran, REFUSED if it was refused, or NO SHELL TOOL if you have no tool that runs shell commands.\n' "$_sc_path" "$_sc_mpath" > "$_sc_dir/prompt"
   if grep -q "$_sc_mark" "$_sc_dir/prompt"; then
     council_die "seat check: the marker appears in the probe prompt, so the check could not tell a read from an echo. This is a bug in plan-council. Nothing has been run."
   fi
 
-  council_say "seat check: before any seat of this phase is paid for, each claude seat is called once, by name, from the context root, and asked to read a file planted in the run directory; the CLI's own record of that call must show the read refused. $_sc_count call(s), each a full CLI session billed as such."
+  council_say "seat check: before any seat of this phase is paid for, each claude seat is called once, by name, from the context root, asked to read a file planted in the run directory and, in the same call, to create another there by running a shell command. The CLI's own record of that call must show the read refused and no shell call refused, and the file must not exist afterwards. $_sc_count call(s), each a full CLI session billed as such."
   _council_planted=$_sc_file
   printf '%s\n' "$_sc_mark" > "$_sc_file" || council_die "seat check: cannot write $_sc_file. Nothing has been run."
+  _council_made=$_sc_made
   _sc_n=0
   for _sc_fn in $_sc_fns; do
     _sc_n=$((_sc_n + 1))
@@ -2402,6 +2457,18 @@ council_seat_check() {
       "$_sc_fn" "$_sc_dir/answer-$_sc_n"
     ) < "$_sc_dir/prompt" > "$_sc_dir/stdout-$_sc_n" 2> "$_sc_dir/stderr-$_sc_n"
     eval "_sc_rc_$_sc_n=\$?"
+    # Looked for, and deleted, before the next seat is called, so that the
+    # file is put down to the seat that created it.
+    eval "_sc_made_$_sc_n=0"
+    if [ -e "$_sc_made" ] || [ -L "$_sc_made" ]; then
+      eval "_sc_made_$_sc_n=1"
+      rm -rf "$_sc_made"
+      if [ -e "$_sc_made" ] || [ -L "$_sc_made" ]; then
+        council_seat_unplant
+        rm -rf "$_sc_dir"
+        council_die "seat check: $_sc_fn created $_sc_made, the file it was asked to create by running a shell command, so it holds a shell, and the check cannot delete it. Delete it before anything else, as it is in the run directory. No seat of this phase has been run after the check."
+      fi
+    fi
   done
   council_seat_unplant
 
@@ -2410,9 +2477,21 @@ council_seat_check() {
   for _sc_fn in $_sc_fns; do
     _sc_n=$((_sc_n + 1))
     eval "_sc_rc=\$_sc_rc_$_sc_n"
+    eval "_sc_made_n=\$_sc_made_$_sc_n"
     _sc_out=$(cat "$_sc_dir/answer-$_sc_n" 2>/dev/null)
     _sc_rep=$(printf '%s\n' "$_sc_out" | council_denials_read)
+    _sc_shrep=$(printf '%s\n' "$_sc_out" | council_denials_read shell)
     _sc_ex=$(printf '%s' "$_sc_out" | tr '\n' ' ' | cut -c1-200)
+    # The shell first, and on its own: a seat whose read was refused is
+    # still refused when it holds a shell. Nothing the seat said is read
+    # here, only the CLI's record and the file system.
+    case "$_sc_shrep" in
+      [1-9]*" "*)
+        _sc_fail="$_sc_fail $_sc_fn: a shell was detected: the CLI's record of the call names a refused Bash or PowerShell call (${_sc_shrep%% *} of ${_sc_shrep#* } entries), and a refused call is one the seat had the tool to make;" ;;
+    esac
+    if [ "$_sc_made_n" = 1 ]; then
+      _sc_fail="$_sc_fail $_sc_fn: a shell was detected: the file it was asked to create by running a shell command exists after its call, so the seat created it. It was deleted, and is not among the run directory's files;"
+    fi
     if cat "$_sc_dir/answer-$_sc_n" "$_sc_dir/stdout-$_sc_n" "$_sc_dir/stderr-$_sc_n" 2>/dev/null | grep -q "$_sc_mark"; then
       _sc_fail="$_sc_fail $_sc_fn: the read was allowed: the marker held only by the planted file appears in what the seat printed, so the seat read the run directory;"
     elif [ "$_sc_rc" -ne 0 ]; then
@@ -2439,11 +2518,18 @@ council_seat_check() {
   rm -rf "$_sc_dir"
 
   if [ -n "$_sc_fail" ]; then
-    council_die "seat check refused the run. The text check of the config had passed for these seats; this check reads the CLI's own record of one call per seat, and it did not show a refused read of the run directory for:${_sc_fail%;}. A seat whose read of the run directory is not refused can read what a run writes there, council.txt included, which says which planner wrote which plan. The seat check made $_sc_count call(s), and no seat of this phase has been run after them."
+    council_die "seat check refused the run. The text check of the config had passed for these seats; this check reads the CLI's own record of one call per seat, and whether the file the call asked the seat to create exists after it, and it refused:${_sc_fail%;}. A seat whose read of the run directory is not refused can read what a run writes there, council.txt included, which says which planner wrote which plan, and a seat must hold no shell, which the deny rule on Read does not cover. The seat check made $_sc_count call(s), and no seat of this phase has been run after them."
   fi
   COUNCIL_SEATCHECK=passed
-  council_say "seat check: a read of the run directory through each of these seats,$COUNCIL_SEATCHECK_SEATS, was refused by the CLI (its permission_denials names Read), in a separate process, just before the run. $(council_seat_target_sentence)${COUNCIL_SEATCHECK_UNPROBED:+ Not probed, since the text check found no claude in them:$COUNCIL_SEATCHECK_UNPROBED.}"
+  council_say "seat check: a read of the run directory through each of these seats,$COUNCIL_SEATCHECK_SEATS, was refused by the CLI (its permission_denials names Read), in a separate process, just before the run. $(council_seat_target_sentence) $(council_seat_shell_sentence)${COUNCIL_SEATCHECK_UNPROBED:+ Not probed, since the text check found no claude in them:$COUNCIL_SEATCHECK_UNPROBED.}"
   return 0
+}
+
+# The sentence that says what a pass shows about a shell, which is less than
+# that there is none (see the comment above council_seat_check). Shared by
+# the message and the record.
+council_seat_shell_sentence() {
+  printf '%s' "No shell was detected: each seat was also asked, in the same call, to create a file in the run directory by running a shell command, and the CLI's record named no refused Bash or PowerShell call, and the file did not exist afterwards. Nothing detected is not the same as no shell, and is not proof that the seat holds no shell: a tool denied by name is absent and leaves no record (measured 2026-11-23), and a seat with a shell that does not try leaves none either."
 }
 
 # The sentence that says what the refusal shows, given where the run
@@ -2475,7 +2561,9 @@ council_seat_record() {
     passed)
       printf 'seatcheck.%s.seats=%s\n' "$1" "${COUNCIL_SEATCHECK_SEATS# }"
       printf 'seatcheck.%s.target=%s\n' "$1" "$COUNCIL_SEATCHECK_TARGET"
-      printf 'seatcheck.%s.from=%s\n' "$1" "a read of the run directory through each seat in seatcheck.$1.seats was refused by the CLI, in a separate process, just before the run: the seat was called once, by name, from the context root, and asked to read a file planted in the run directory, and the CLI's record of that call (permission_denials in its JSON output) named a refused Read, while the file's content appeared nowhere in what it printed. $(council_seat_target_sentence) One call per seat, not a record of the calls that followed it." ;;
+      printf 'seatcheck.%s.from=%s\n' "$1" "a read of the run directory through each seat in seatcheck.$1.seats was refused by the CLI, in a separate process, just before the run: the seat was called once, by name, from the context root, and asked to read a file planted in the run directory, and the CLI's record of that call (permission_denials in its JSON output) named a refused Read, while the file's content appeared nowhere in what it printed. $(council_seat_target_sentence) One call per seat, not a record of the calls that followed it."
+      printf 'seatcheck.%s.shell=%s\n' "$1" notdetected
+      printf 'seatcheck.%s.shell.from=%s\n' "$1" "$(council_seat_shell_sentence)" ;;
     none)
       printf 'seatcheck.%s.from=%s\n' "$1" "no seat of this phase was judged by the text check to drive claude, so none was probed" ;;
     skipped)

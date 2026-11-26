@@ -385,14 +385,17 @@ a record the CLI writes. Before the seats of each phase are paid for,
 `council-plan.sh` and `council-review.sh` call each seat the text check
 judged to drive `claude` once, by name, from the context root, with
 `--output-format json` added for that call only, and ask it to read a file
-planted in the run directory. The phase goes on only if the CLI's own record
-of that call, its `permission_denials` field, names a refused `Read`, and the
-file's content appears nowhere in what the seat printed. Anything else stops
-the run, names the cause, and says that the text check had passed. It costs
-one call per `claude` seat per phase: before the planners, before the
-attacks and before the arbiter. `council.txt` records the outcome as
-`seatcheck.plan=`, `seatcheck.attack=` and `seatcheck.arbitrate=`, each with
-a `.from=` line saying what was measured.
+planted in the run directory and, in the same call, to create another file
+there by running a shell command. The phase goes on only if the CLI's own
+record of that call, its `permission_denials` field, names a refused `Read`
+and no refused `Bash` or `PowerShell`, the planted file's content appears
+nowhere in what the seat printed, and the file the seat was asked to create
+does not exist afterwards. Anything else stops the run, names the cause, and
+says that the text check had passed. It costs one call per `claude` seat per
+phase: before the planners, before the attacks and before the arbiter.
+`council.txt` records the outcome as `seatcheck.plan=`, `seatcheck.attack=`
+and `seatcheck.arbitrate=`, each with a `.from=` line saying what was
+measured, and a pass with `.shell=notdetected` beside it.
 
 What a pass does not show is which rule refused the read. With the run
 directory inside the context root, `--restricted` alone does not refuse it,
@@ -406,18 +409,31 @@ record lists it; an `arbiter` like that does not get this far. `--no-seat-check`
 skips the check, and `council.txt` then records `skipped`. `council-assign.sh`
 does not run it.
 
-Nor can the check tell whether `Bash` is denied, and that is not an omission
-to close by reading the CLI's record. Measured 2026-11-23, three calls with
-`--output-format json`: with the shipped seat flags, and again with no
+About a shell, the check can prove one present, and cannot prove one absent.
+`0.6.0` said here that it could not tell whether `Bash` is denied, and that
+this was not an omission to close by reading the CLI's record. That was true
+of absence only, and read too much into it. Measured 2026-11-23, three calls
+with `--output-format json`: with the shipped seat flags, and again with no
 `--tools` and `Bash` denied by name, the seat had no `Bash`, answered
 `NO SHELL TOOL`, and `permission_denials` was empty; the control, with no
 `--tools` and `Bash` allowed, ran the command from the same prompt and
 printed its output. A tool denied by name is absent from the session, not
-refused on use, so no refusal happens and the CLI has nothing to
-record. A path rule on `Read` is the opposite: the tool stays present, and
-the CLI records the refusal when a read hits the rule. That is why the deny
-rule can be checked per run and `Bash` cannot. The check does not verify
-that `Bash` is absent, and its absence cannot be read from that record.
+refused on use, so it leaves no record. Measured 2026-11-26, a seat asked to
+create a file by running a shell command: with a shell (no `--tools`, `Bash`
+not denied) its `Bash` and its `PowerShell` attempts were both refused by the
+CLI's write-approval layer, the file was not created, and
+`permission_denials` named both; with the shipped seat flags, no file and no
+entry. So a shell that is present and tries is recorded when it is refused,
+and leaves the file when it is not. Either is a fact the CLI or the disk
+holds, not the model's words, and the check refuses the run on either; what
+the seat says about its tools is not read. The converse does not hold: no
+entry and no file is what an absent shell gives, and also what a seat with a
+shell gives when it does not try. A pass therefore records that no shell was
+detected, which is not the same as no shell. The prompt the check sends is
+not the one measured on 2026-11-26 (it also asks for the read, and names the
+file by an absolute path in the run directory); whether it draws the attempt
+as that one did is shown by a run against the CLI, not by the tests, which
+use a stand-in.
 
 Four test files ship with the plugin: `definitions.sh` tests the text check,
 `permission-denials.sh` the per-run seat check, `repository-block.sh` what
@@ -464,8 +480,13 @@ stand-in `codex` that is not logged in. When `bash` is installed, one section of
 `definitions.sh` sources every test config in
 bash and compares the definition bash keeps with the one the check names;
 bash is used there only because it can say where a kept function was
-defined, and agreeing with bash is not agreeing with every shell. The exit
-status is non-zero when any assertion failed.
+defined, and agreeing with bash is not agreeing with every shell. One row of
+`permission-denials.sh` runs the parallel runner under bash run as bash, the
+one shell here in which a failed redirection does not end the subshell, so
+that the runner's `|| exit 96` after it is seen by a test: under `sh` and
+`dash` the rows stay green without it. Both are skipped, with a line saying
+so, when bash is not installed. The exit status is non-zero when any
+assertion failed.
 
 Every setting also **defers to the environment**, so a single run can be changed
 without editing a file:
