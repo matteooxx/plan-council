@@ -23,11 +23,17 @@
 # refuses the read, with one permission_denials entry naming Read, when a
 # Read(DIR/**) argument covers the file, or when --restricted is given and the
 # file lies outside its working directory; otherwise it reads the file and
-# puts its first line in the result. STUB_MODE makes it misbehave on purpose.
+# puts its first line in the result. Asked by the same probe to create a file
+# by running a shell command, it holds a shell unless --tools or Bash is among
+# its arguments, and, holding one, records a refused Bash call, as the CLI did
+# when measured on 2026-11-26. STUB_MODE makes it misbehave on purpose, and
+# STUB_SHELL and STUB_SHELL_HOW change what it holds and does about the shell.
 # When STUB_RULES names a file, it also writes there one line per Read(...)
 # argument, prefixed by the COUNCIL_PHASE the runner exported, so that what a
 # script computes for its deny rules can be read phase by phase.
 # Everything is written to that temporary directory, which is removed on exit.
+# One row runs the parallel runner under bash run as bash, and is skipped,
+# with a line saying so, when bash is not installed.
 set -u
 
 T_DIR=$(cd "$(dirname "$0")" && pwd -P) || exit 1
@@ -118,6 +124,33 @@ t_read "tool_name not a string" "0 1" '{"permission_denials":[{"tool_name":["Rea
 t_read "a second object after the first adds nothing" "0 0" '{"permission_denials":[]}\n{"permission_denials":[%s]}\n' "$ENTRY"
 t_read "text after the object is ignored" "1 1" '{"permission_denials":[%s]} trailing text\n' "$ENTRY"
 
+# t_shell LABEL EXPECTED FORMAT [ARG] -- council_denials_read shell, the same
+# reader counting the entries that name a shell tool, prints EXPECTED. Made
+# in a command substitution, for the reason given above t_read.
+t_shell() {
+  if [ $# -ge 4 ]; then
+    _t_got=$(printf "$3" "$4" | council_denials_read shell)
+  else
+    _t_got=$(printf "$3" | council_denials_read shell)
+  fi
+  t_same "$1: council_denials_read shell prints" "$2" "$_t_got"
+}
+
+# The record measured on 2026-11-26 for a seat with a shell, cut to its
+# permission_denials field: both shell calls refused, the commands kept.
+SHELLPD='[{"tool_name":"Bash","tool_use_id":"toolu_a","tool_input":{"command":"printf %s > marker-7f3a.txt && ls -l marker-7f3a.txt","description":"Write marker file with shell command"}},{"tool_name":"PowerShell","tool_use_id":"toolu_b","tool_input":{"command":"Set-Content -Path marker-7f3a.txt -Value x","description":"Write marker file via shell"}}]'
+
+t_shell "the measured record of a seat with a shell" "2 2" '{"result":"I do have shell tools","permission_denials":%s,"is_error":false}\n' "$SHELLPD"
+t_shell "two Bash entries beside a Read entry" "2 3" '{"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"x"}},%s,{"tool_name":"Bash","tool_input":{"command":"y"}}]}\n' "$ENTRY"
+t_shell "a PowerShell entry alone" "1 1" '{"permission_denials":[{"tool_name":"PowerShell"}]}\n'
+t_shell "a Read entry alone" "0 1" '{"permission_denials":[%s]}\n' "$ENTRY"
+t_shell "Bash only in the model's words" "0 1" '{"result":"I ran Bash and PowerShell, tool_name Bash","permission_denials":[%s]}\n' "$ENTRY"
+t_shell "Bash only nested deeper in the entry" "0 1" '{"permission_denials":[{"tool_name":"Read","tool_input":{"tool_name":"Bash"}}]}\n'
+t_shell "Bash spelled with an escape" "0 1" '{"permission_denials":[{"tool_name":"B\\u0061sh"}]}\n'
+t_shell "a lower-case bash" "0 1" '{"permission_denials":[{"tool_name":"bash"}]}\n'
+t_shell "duplicated field" "!" '{"permission_denials":[],"permission_denials":%s}\n' "$SHELLPD"
+t_read "the measured record of a seat with a shell, read for Read" "0 2" '{"permission_denials":%s}\n' "$SHELLPD"
+
 # ---------------------------------------------------------------------------
 echo "The switch"
 
@@ -178,6 +211,19 @@ if [ "$mode" = fail ]; then
   exit 3
 fi
 path=$(printf '%s\n' "$prompt" | grep -E '^(/|[A-Za-z]:/).*notes-[0-9]+\.txt$' | head -n 1)
+made=$(printf '%s\n' "$prompt" | grep -E '^(/|[A-Za-z]:/).*created-[0-9]+\.txt$' | head -n 1)
+[ -z "$made" ] || printf 'made:%s\n' "$made" >> "$STUB_LOG"
+# Whether this seat holds a shell, as measured: none with --tools (which
+# leaves it out) or with Bash named among the arguments (denied by name);
+# one otherwise. STUB_SHELL=always gives every seat one, never none.
+shell=1
+for a in "$@"; do
+  case "$a" in --tools|Bash) shell=0 ;; esac
+done
+case "${STUB_SHELL:-}" in
+  always) shell=1 ;;
+  never) shell=0 ;;
+esac
 if [ -z "$path" ]; then
   # A seat's real work: a plain answer, long enough to be accepted. Asked for
   # JSON, the CLI wraps its answer in a JSON object, and so does this.
@@ -212,11 +258,30 @@ fi
 [ "$mode" = deny ] && denied=1
 if [ "$denied" = 1 ]; then
   result=BLOCKED
-  pd='[{"tool_name":"Read","tool_use_id":"toolu_stub","tool_input":{"file_path":"'"$path"'"}}]'
+  ents='{"tool_name":"Read","tool_use_id":"toolu_stub","tool_input":{"file_path":"'"$path"'"}}'
 else
   result=$(head -n 1 "$path" 2>/dev/null)
-  pd='[]'
+  ents=''
 fi
+# Asked to create a file by running a shell command, a seat with a shell
+# tries; the CLI refuses the write and records it, as measured on
+# 2026-11-26, unless STUB_SHELL_HOW says otherwise: pwsh records PowerShell,
+# both records both, as measured, and write lets the command run, so the
+# file exists and nothing is recorded. claim records nothing and creates
+# nothing, whatever the seat holds, and puts a claim of a shell in the words.
+bash_ent='{"tool_name":"Bash","tool_use_id":"toolu_sh","tool_input":{"command":"touch '"$made"'","description":"Create the file"}}'
+pwsh_ent='{"tool_name":"PowerShell","tool_use_id":"toolu_ps","tool_input":{"command":"New-Item '"$made"'","description":"Create the file"}}'
+if [ -n "$made" ] && [ "${STUB_SHELL_HOW:-}" = claim ]; then
+  result="I have a Bash tool and a PowerShell tool and I created the file with Bash"
+elif [ -n "$made" ] && [ "$shell" = 1 ]; then
+  case "${STUB_SHELL_HOW:-}" in
+    write) : > "$made" ;;
+    pwsh) ents="$ents${ents:+,}$pwsh_ent" ;;
+    both) ents="$ents${ents:+,}$bash_ent,$pwsh_ent" ;;
+    *) ents="$ents${ents:+,}$bash_ent" ;;
+  esac
+fi
+pd="[$ents]"
 case "$mode" in
   nodenial) result=BLOCKED; pd='[]' ;;
   plaintext) json=0 ;;
@@ -237,7 +302,9 @@ PATH="$T_TMP/bin:$PATH"
 STUB_LOG="$T_TMP/stub.log"
 STUB_RULES="$T_TMP/stub-rules.log"
 STUB_MODE=""
-export PATH STUB_LOG STUB_RULES STUB_MODE
+STUB_SHELL=""
+STUB_SHELL_HOW=""
+export PATH STUB_LOG STUB_RULES STUB_MODE STUB_SHELL STUB_SHELL_HOW
 
 # t_rule_count PHASE RULE -- how many Read(...) arguments the stand-in
 # received in PHASE that equal RULE, read from STUB_RULES.
@@ -279,6 +346,22 @@ planner_norule() {
     > "$1"
 }
 
+# A seat with the deny rule and a shell: no $(council_seat_flags), so no
+# --tools, and Bash not denied, as the seat with a shell measured on
+# 2026-11-26. The control for the shell detection: the text check refuses
+# this definition, so the probe is called on it directly here. It asks for
+# JSON itself, as that measurement did: the probe's switch reaches a seat
+# only through $(council_seat_flags), and without a record this seat would
+# be refused for having none, never reaching the shell.
+planner_shell() {
+  claude -p --model "$COUNCIL_MODEL_CLAUDE" \
+    --effort "$(council_effort)" \
+    --permission-mode default \
+    --output-format json \
+    --disallowedTools Edit Write NotebookEdit "$COUNCIL_DENY" "$COUNCIL_DENY2" \
+    > "$1"
+}
+
 # t_probe NAME RUN FNS -- council_seat_check ROOT RUN STAGE in a subshell,
 # with the deny rule on RUN and COUNCIL_CHECK_CLAUDE set to FNS. Its return
 # code goes to T_RC, its record to $T_TMP/NAME.rec, its messages to
@@ -299,10 +382,13 @@ t_probe() {
 }
 
 # t_clean NAME RUN -- after a probe, the run directory holds no planted file
-# and the stage no seatcheck directory and no log.
+# and no file a seat was asked to create, and the stage no seatcheck
+# directory and no log.
 t_clean() {
   _t_got=$(ls -A "$2" | grep '^notes-' || true)
   t_same "$1: the planted file is gone from the run directory" "" "$_t_got"
+  _t_got=$(ls -A "$2" | grep '^created-' || true)
+  t_same "$1: no file a seat was asked to create is left in the run directory" "" "$_t_got"
   if [ -e "$T_TMP/$1.stage/seatcheck" ]; then _t_got=present; else _t_got=absent; fi
   t_same "$1: the stage's seatcheck directory" absent "$_t_got"
   _t_got=$(ls "$T_TMP/$1.stage" | grep '\.log$' || true)
@@ -323,6 +409,11 @@ t_has "inside: council_seat_record says inside the root" "$T_TMP/inside.rec" "Th
 t_lacks "inside: council_seat_record never says" "$T_TMP/inside.rec" "deny rule is in force"
 t_lacks "inside: council_seat_record never says" "$T_TMP/inside.rec" "verified"
 t_lacks "inside: council_seat_record, no unprobed line" "$T_TMP/inside.rec" "unprobed"
+t_has "inside: the probe asked the seat to create a file in the run directory" "$STUB_LOG" "made:$(council_cli_path "$RUN_IN")/created-"
+t_has "inside: council_seat_record" "$T_TMP/inside.rec" "seatcheck.plan.shell=notdetected"
+t_has "inside: council_seat_record says nothing detected is not no shell" "$T_TMP/inside.rec" "is not proof that the seat holds no shell"
+t_has "inside: the message on stderr says the same" "$T_TMP/inside.err" "Nothing detected is not the same as no shell"
+t_lacks "inside: council_seat_record never says" "$T_TMP/inside.rec" "shell=absent"
 t_clean inside "$RUN_IN"
 t_same "inside: calls the stand-in recorded" 1 "$(t_calls)"
 # Argument boundaries: the deny rule, whose path holds a space, arrives as one
@@ -401,6 +492,73 @@ t_lacks "two seats: the passing one is not named as failing" "$T_TMP/mixed.err" 
 t_has "two seats: the refusal counts the calls" "$T_TMP/mixed.err" "The seat check made 2 call(s)"
 t_same "two seats: calls the stand-in recorded" 2 "$(t_calls)"
 t_clean mixed "$ROOT/.council/run-mixed"
+
+echo "The probe: a seat that holds a shell"
+
+# The control the shell detection needs: a stand-in that reports a Bash
+# denial refuses, and one that reports none passes (the rows above, with the
+# shipped arbiter). Each refusal names the seat and says what was shown.
+t_probe shell "$ROOT/.council/run-shell" " planner_shell"
+t_same "a seat with a shell, its Bash call refused: council_seat_check returns" 1 "$T_RC"
+t_has "a seat with a shell: the refusal" "$T_TMP/shell.err" "planner_shell: a shell was detected: the CLI's record of the call names a refused Bash or PowerShell call (1 of 2 entries)"
+t_has "a seat with a shell: the refusal says the text check had passed" "$T_TMP/shell.err" "The text check of the config had passed"
+t_lacks "a seat with a shell: council_seat_record printed nothing" "$T_TMP/shell.rec" "seatcheck"
+t_same "a seat with a shell: calls the stand-in recorded" 1 "$(t_calls)"
+t_clean shell "$ROOT/.council/run-shell"
+
+STUB_SHELL=always STUB_SHELL_HOW=pwsh; export STUB_SHELL STUB_SHELL_HOW
+t_probe pwsh "$ROOT/.council/run-pwsh" " arbiter"
+t_same "the shipped arbiter, a PowerShell call refused: council_seat_check returns" 1 "$T_RC"
+t_has "a PowerShell call refused: the refusal" "$T_TMP/pwsh.err" "arbiter: a shell was detected: the CLI's record of the call names a refused Bash or PowerShell call (1 of 2 entries)"
+t_clean pwsh "$ROOT/.council/run-pwsh"
+
+STUB_SHELL_HOW=both; export STUB_SHELL_HOW
+t_probe both "$ROOT/.council/run-both" " arbiter"
+t_same "Bash and PowerShell refused, as measured: council_seat_check returns" 1 "$T_RC"
+t_has "Bash and PowerShell refused: the refusal" "$T_TMP/both.err" "(2 of 3 entries)"
+t_clean both "$ROOT/.council/run-both"
+
+STUB_SHELL_HOW=write; export STUB_SHELL_HOW
+t_probe write "$ROOT/.council/run-write" " arbiter"
+t_same "the command ran and created the file: council_seat_check returns" 1 "$T_RC"
+t_has "the file created: the refusal" "$T_TMP/write.err" "arbiter: a shell was detected: the file it was asked to create by running a shell command exists after its call, so the seat created it"
+t_lacks "the file created: the refusal does not cite the record" "$T_TMP/write.err" "names a refused Bash"
+t_clean write "$ROOT/.council/run-write"
+
+# Which seat created the file: the file is looked for, and deleted, after
+# each call, so a seat called after the one that created it is not blamed.
+STUB_SHELL="" STUB_SHELL_HOW=write; export STUB_SHELL STUB_SHELL_HOW
+t_probe order "$ROOT/.council/run-order" " planner_shell arbiter"
+t_same "two seats, the first creating the file: council_seat_check returns" 1 "$T_RC"
+t_has "two seats, the first creating the file: the refusal" "$T_TMP/order.err" "planner_shell: a shell was detected: the file it was asked to create"
+t_lacks "two seats, the first creating the file: the second is not named" "$T_TMP/order.err" "arbiter: "
+t_same "two seats, the first creating the file: calls the stand-in recorded" 2 "$(t_calls)"
+t_clean order "$ROOT/.council/run-order"
+
+# The model's words are not read: a seat whose answer claims a shell, with
+# no shell entry in its record and no file, passes, and the record says
+# that nothing was detected, not that there is no shell.
+STUB_SHELL_HOW=claim; export STUB_SHELL_HOW
+t_probe claim "$ROOT/.council/run-claim" " arbiter"
+t_same "an answer claiming a shell, nothing recorded: council_seat_check returns" 0 "$T_RC"
+t_has "an answer claiming a shell: council_seat_record" "$T_TMP/claim.rec" "seatcheck.plan.shell=notdetected"
+t_clean claim "$ROOT/.council/run-claim"
+STUB_SHELL="" STUB_SHELL_HOW=""; export STUB_SHELL STUB_SHELL_HOW
+
+# A file already there under the name the seat would be asked to create is
+# refused before any call, and left alone: it is not the check's to delete.
+# The name carries the shell's process number, which a subshell inherits.
+RUN_PRE="$ROOT/.council/run-pre"
+mkdir -p "$RUN_PRE"
+printf 'mine\n' > "$RUN_PRE/created-$$.txt"
+t_probe pre "$RUN_PRE" " arbiter"
+t_same "the file to be created already exists: council_seat_check returns" 1 "$T_RC"
+t_has "the file to be created already exists: the refusal" "$T_TMP/pre.err" "created-$$.txt already exists"
+t_same "the file to be created already exists: calls the stand-in recorded" 0 "$(t_calls)"
+_t_got=$(cat "$RUN_PRE/created-$$.txt" 2>/dev/null)
+t_same "the file to be created already exists: it is left as it was" mine "$_t_got"
+_t_got=$(ls -A "$RUN_PRE" | grep '^notes-' || true)
+t_same "the file to be created already exists: the planted file" "" "$_t_got"
 
 echo "The probe: seats it does not reach"
 
@@ -533,6 +691,33 @@ if [ -e "$T_PL/stage-noprompt/answer-S.md" ]; then _t_got=present; else _t_got=a
 t_same "missing prompt: answer-S.md, so the seat was not called" absent "$_t_got"
 t_lacks "missing prompt: the runner's own stdout" "$T_PL/runner-np.out" "out:"
 
+# The same under bash run as bash, the one shell here where a failed
+# redirection on exec does not end the subshell: it prints the error and
+# goes on, so only the "|| exit 96" after it keeps the seat from running on
+# the runner's own stdin and stdout. sh and dash end the subshell there by
+# themselves, so the rows above stay green without that guard; this row is
+# the one that sees it. It is skipped, with a line saying so, when bash is
+# not installed.
+if command -v bash > /dev/null 2>&1; then
+  mkdir -p "$T_PL/stage-bash"
+  _t_got=$(bash -c 'if shopt -oq posix; then echo on; else echo off; fi')
+  t_same "bash, run as bash: posix mode" off "$_t_got"
+  T_RC=0
+  COUNCIL_MIN_BYTES=$COUNCIL_MIN_BYTES bash -c '
+    . "$1/scripts/lib.sh"
+    T_PL=$2
+    t_plumb_seat() { "$T_PL/child.sh" "$1"; }
+    council_run_parallel "$T_PL/root" "$T_PL/stage-bash" "S:t_plumb_seat"
+  ' t "$T_PLUGIN" "$T_PL" > "$T_PL/runner-bash.out" 2> "$T_PL/runner-bash.err" < /dev/null || T_RC=$?
+  t_same "missing prompt, under bash run as bash: council_run_parallel returns" 1 "$T_RC"
+  t_has "missing prompt, under bash run as bash: the runner's own stderr" "$T_PL/runner-bash.err" "S FAILED with exit code 96 (see stderr-S.log)"
+  if [ -e "$T_PL/stage-bash/answer-S.md" ]; then _t_got=present; else _t_got=absent; fi
+  t_same "missing prompt, under bash run as bash: answer-S.md, so the seat was not called" absent "$_t_got"
+  t_lacks "missing prompt, under bash run as bash: the runner's own stdout" "$T_PL/runner-bash.out" "out:"
+else
+  echo "skip  bash is not installed, so the runner's exit 96 on a failed redirection was not run under bash"
+fi
+
 # ---------------------------------------------------------------------------
 echo "The scripts that run it"
 
@@ -620,6 +805,7 @@ for T_SH in $T_SHELLS; do
   t_has "$T_N council-plan.sh: council.txt" "$RUN/council.txt" "seatcheck.plan=passed"
   t_has "$T_N council-plan.sh: council.txt" "$RUN/council.txt" "seatcheck.plan.seats=planner_claude planner_claude_alt"
   t_has "$T_N council-plan.sh: council.txt" "$RUN/council.txt" "seatcheck.plan.target=inside"
+  t_has "$T_N council-plan.sh: council.txt" "$RUN/council.txt" "seatcheck.plan.shell=notdetected"
   t_same "$T_N council-plan.sh: calls the stand-in recorded (two probes, two planners)" 4 "$(t_calls)"
   t_same "$T_N council-plan.sh: calls carrying --output-format json (the probes only)" 2 "$(t_json_calls)"
   # Planning deliberately leaves earlier runs readable: COUNCIL_DENY2 is this
@@ -637,6 +823,8 @@ for T_SH in $T_SHELLS; do
   done
   _t_got=$(ls -A "$RUN" | grep '^notes-' || true)
   t_same "$T_N council-plan.sh: planted file left in the run directory" "" "$_t_got"
+  _t_got=$(ls -A "$RUN" | grep '^created-' || true)
+  t_same "$T_N council-plan.sh: a file a seat was asked to create, left in the run directory" "" "$_t_got"
   _t_got=$(cat "$RUN"/logs/* 2>/dev/null | grep -c 'permission_denials\|BLOCKED' || true)
   t_same "$T_N council-plan.sh: probe output in the published logs" 0 "$_t_got"
 
@@ -670,6 +858,8 @@ for T_SH in $T_SHELLS; do
   done
   _t_got=$(ls -A "$RUN" | grep '^notes-' || true)
   t_same "$T_N council-review.sh: planted file left in the run directory" "" "$_t_got"
+  _t_got=$(ls -A "$RUN" | grep '^created-' || true)
+  t_same "$T_N council-review.sh: a file a seat was asked to create, left in the run directory" "" "$_t_got"
   # A rerun of the arbitration replaces its seat-check lines.
   : > "$STUB_LOG"
   : > "$STUB_RULES"
@@ -706,6 +896,20 @@ for T_SH in $T_SHELLS; do
   t_same "$T_N council-plan.sh, the read allowed: calls without --output-format json (planners)" 0 "$(( $(t_calls) - $(t_json_calls) ))"
   _t_got=$(ls -A "$ROOT/.council/refused-$T_N")
   t_same "$T_N council-plan.sh, the read allowed: the run directory afterwards" "" "$_t_got"
+
+  # A seat that holds a shell stops the run before any planner, and the
+  # file it created is not left in the run directory.
+  : > "$STUB_LOG"
+  T_RC=0
+  STUB_SHELL=always STUB_SHELL_HOW=write COUNCIL_PLANNERS="claude claude_alt" TMPDIR="$T_TMP/tmp" \
+    "$T_SH" "$T_PLUGIN/scripts/council-plan.sh" "$T_TMP/brief.md" --root "$ROOT" --out "$ROOT/.council/shell-$T_N" \
+    > /dev/null 2> "$T_TMP/plan-shell.err" || T_RC=$?
+  t_same "$T_N council-plan.sh, a seat with a shell: exits" 1 "$T_RC"
+  t_has "$T_N council-plan.sh, a seat with a shell: the refusal" "$T_TMP/plan-shell.err" "planner_claude: a shell was detected"
+  t_has "$T_N council-plan.sh, a seat with a shell: the refusal" "$T_TMP/plan-shell.err" "planner_claude_alt: a shell was detected"
+  t_same "$T_N council-plan.sh, a seat with a shell: calls without --output-format json (planners)" 0 "$(( $(t_calls) - $(t_json_calls) ))"
+  _t_got=$(ls -A "$ROOT/.council/shell-$T_N")
+  t_same "$T_N council-plan.sh, a seat with a shell: the run directory afterwards" "" "$_t_got"
 
   # --no-seat-check makes no probe and says so.
   : > "$STUB_LOG"

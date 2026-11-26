@@ -1624,8 +1624,10 @@ echo "Agreement with bash"
 # names. bash is the oracle because "declare -F" with extdebug prints the
 # file and line of the definition it kept, and dash prints no body at all.
 # The plugin runs under both shells, so agreeing with bash is not agreeing
-# with every POSIX shell. This section is the one place the tests run bash,
-# and it is skipped, with a line saying so, when bash is not installed.
+# with every POSIX shell. This section is the one place the tests source a
+# fixture in bash, and it is skipped, with a line saying so, when bash is not
+# installed. permission-denials.sh runs bash once more, in the same way, for
+# the runner's exit 96, which only bash run as bash can see.
 #
 # Each fixture is sourced twice, with USE_PLUGIN, X and MINE empty and then
 # set, because several fixtures branch on them; when the two runs keep
